@@ -8,7 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 options(digits=5)
-#options(knitr.table.format = "html") 
+
 # Load packages
 library(knitr)
 library(ggplot2)
@@ -73,6 +73,11 @@ subsetLimited$subject_id <- as.character(subsetLimited$subject_id)
 data(stop_words)
 
 ```
+## An Explanation!
+Greetings!  
+   This is semi-formal write up for the first step of project I started working on in January 2018. The overall idea is to take advantage of the free-text 'Notes' section in an electronic health record (EHR) and build [at least part of] a case investigation document. The project as a whole is still in early development stages, but here's hoping it keeps going!  
+   Also, I originally intended this to be more blog post-esque. Unfortunately, my inner nerd took over and turned it into more of a manuscript. I still left in my code, including some of the comments for when things went wonky, but overall it's a pretty dry read. My apologies.  
+
 ## Introduction
 In accordance with state and federal regulations, healthcare providers and laboratories are required to report positive incidences of notifiable conditions. Each state has a specific list of communicable and other infectious diseases that they require practitioners to report. Traditionally, the case reporting process has been conducted via paper reports and internet-based entry systems, which are often slow, incomplete, or not reported at all due to the significant effort required of clinicians.^1^ Fortunately, recent developments have made electronic case reporting (eCR) a more viable option for healthcare facilities. eCR is the electronic transmission of a case report directly from a patient's electronic health record (EHR) to a public health jurisdiction or healthcare intermediary. The aim of eCR is to reduce clinician burden, while also increasing report timeliness and completion.^2-4^ In turn, these improvements allow for increased detection of outbreaks, earlier intervention, and decreased disease transmission.^3^ At present, there is a large eCR development project, [Digital Bridge](www.digitalbridge.us), which is piloting eCR at seven sites across the nation.^3^ On a broad scale, the technical infrastructure uses standardized and publicly available trigger codes to determine whether a case report should be initialized, and then an HL7 standard to transmit the data. After a case is reported, case investigation is used to determine disease etiology, case management, potential sources of infection, management of exposure(s), and environmental measures. At present, the HL7 Initial Electronic Case Report only holds a limited set of information; much less than what is required for a case investigation. 
 
@@ -121,8 +126,6 @@ subsetDemo$religion2 <- recode(subsetDemo$religion2, "c('NOT SPECIFIED','UNOBTAI
 detach(package:car, unload=TRUE)
 
 
-
-
 #Calculate proportions
   #Spent over an hour trying to make these into one function for all variables and could not figure it out
 #Age
@@ -137,9 +140,6 @@ demoCombAge <- propAge(subsetDemo) %>% rowsAge()
 demoCaseAge <- filter(subsetDemo, case==1) %>% propAge() %>% rowsAge()
 demoControlAge <- filter(subsetDemo, case==0) %>% propAge() %>% rowsAge()
 demoTableAge <- cbind(demoCombAge, demoCaseAge, demoControlAge)
-# kable(demoTableAge, "html") %>%
-#   kable_styling("striped") %>%
-#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
 
 #Ethnicity
 propEth <- function(data){
@@ -153,9 +153,6 @@ demoCombEth <- propEth(subsetDemo) %>% rowsEth()
 demoCaseEth <- filter(subsetDemo, case==1) %>% propEth() %>% rowsEth()
 demoControlEth <- filter(subsetDemo, case==0) %>% propEth() %>% rowsEth()
 demoTableEth <- cbind(demoCombEth, demoCaseEth, demoControlEth)
-# kable(demoTableEth, "html") %>%
-#   kable_styling("striped") %>%
-#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
 
 #Language
 propLang <- function(data){
@@ -169,9 +166,6 @@ demoCombLang <- propLang(subsetDemo) %>% rowsLang()
 demoCaseLang <- filter(subsetDemo, case==1) %>% propLang() %>% rowsLang()
 demoControlLang <- filter(subsetDemo, case==0) %>% propLang() %>% rowsLang()
 demoTableLang <- cbind(demoCombLang, demoCaseLang, demoControlLang)
-# kable(demoTableLang, "html") %>%
-#   kable_styling("striped") %>%
-#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
 
 #Insurance
 propInsur <- function(data){
@@ -190,9 +184,6 @@ demoControlInsur <- filter(subsetDemo, case==0) %>% propInsur() %>% rowsInsur()
   names(selfPay) <- c("n","proportion")
   demoCaseInsur <- rbind(demoCaseInsur, selfPay)
 demoTableInsur <- cbind(demoCombInsur, demoCaseInsur, demoControlInsur)
-# kable(demoTableInsur, "html") %>%
-#   kable_styling("striped") %>%
-#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
 
 #Religion
 propRel <- function(data){
@@ -206,11 +197,8 @@ demoCombRel <- propRel(subsetDemo) %>% rowsRel()
 demoCaseRel <- filter(subsetDemo, case==1) %>% propRel() %>% rowsRel()
 demoControlRel <- filter(subsetDemo, case==0) %>% propRel() %>% rowsRel()
 demoTableRel <- cbind(demoCombRel, demoCaseRel, demoControlRel)
-# kable(demoTableRel, "html") %>%
-#   kable_styling("striped") %>%
-#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
 
-#All together now
+#All together now - plotting a single demographic table
 demographicTable <- rbind(demoTableAge, demoTableEth, demoTableLang, demoTableRel, demoTableInsur)
 kable(demographicTable, "html") %>%
   kable_styling("striped", full_width = F) %>%
@@ -329,7 +317,8 @@ names(tidyCasesFreq)[1] <- "word"
 names(tidyCasesFreq)[2] <- "freq"
 tidyCasesFreq <- tidyCasesFreq[order(-tidyCasesFreq$freq),]
 cloudCases <- wordcloud2(tidyCasesFreq)
-cloudCases
+saveWidget(cloudCases, "1.html", selfcontained = F)
+webshot::webshot("1.html","1.png",vwidth=700,vheight=500,delay=10)
 
 #Controls
 tidyControlsFreq <- tidyControlsDF %>% 
@@ -339,7 +328,8 @@ names(tidyControlsFreq)[1] <- "word"
 names(tidyControlsFreq)[2] <- "freq"
 tidyControlsFreq <- tidyControlsFreq[order(-tidyControlsFreq$freq),]
 cloudControls <- wordcloud2(tidyControlsFreq)
-cloudControls
+saveWidget(cloudControls, "2.html", selfcontained = F)
+webshot::webshot("2.html","2.png",vwidth=700,vheight=500,delay=10)
 
 #Combined
 tidyCombinedFreq <- subsetTokens %>%
@@ -349,17 +339,18 @@ names(tidyCombinedFreq)[1] <- "word"
 names(tidyCombinedFreq)[2] <- "freq"
 tidyCombinedFreq <- tidyCombinedFreq[order(-tidyCombinedFreq$freq),]
 cloudCombined <- wordcloud2(tidyCombinedFreq)
-cloudCombined
+saveWidget(cloudCombined, "3.html", selfcontained = F)
+webshot::webshot("3.html","3.png",vwidth=700,vheight=500,delay=10)
 
 ```
-It is clear that the cases and controls both contain many similar terms. Thus, below we quantify the similarity.  
+It is clear that the cases and controls both contain many similar terms. Thus, below we quantify the similarity.   
 ```{r quantifySim}
 #Quantify similarity between word frequecy sets
 cor.test(data=frequencyDF[frequencyDF$category=="Controls",],
          ~ proportion + `Cases`)
 
 ```
-Cases and controls are indeed significantly similar.   
+Cases and controls are indeed significantly similar, so differentiating between case status may be difficult.   
   
   
 ###Lasso Logistic Regression
@@ -419,11 +410,12 @@ The original logistic regression yeilded a model with eight select features, of 
   
   Below we run 10-fold cross-validation examine which terms were selected by cross-validated model. 
 ```{r glmnetCV}
-#Cross-validated model
+#Cross-validated (CV) model
 projectCVFit <- cv.glmnet(projectMatrixScale, projectOutcome, family="binomial", type.measure="class")
-#Cross-validation Plot
-plot(projectCVFit)#, main="Binomial Lasso Logistic Regression for Cases vs Controls")
+#CV Plot
+plot(projectCVFit)
 
+#CV Coefficients
 projectCVCoefs <- coef(projectCVFit, s="lambda.min")
 #Intercept
 projectCVCoefs[1]
@@ -456,9 +448,9 @@ For our next step, we would like to extract the full sentences which contain the
 4. 	Advancing Electronic Case Reporting of Sexually Transmitted Infections.; 2016. https://www.phii.org/sites/www.phii.org/files/resource/files/ECRofSTIGuidance_v2_Draft1_20160719.pdf. Accessed January 31, 2018.
 5. Johnson AE, Pollard TJ, Shen L, et al. MIMIC-III, a freely accessible critical care database Background &amp; Summary. Nature. 2016. doi:10.1038/sdata.2016.35
 6. Goldberger AL, Amaral LAN, Glass L, et al. PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals. Circulation. 2000;101(23):e215-e220. http://circ.ahajournals.org/content/101/23/e215.full.
-7. http://www.mass.gov/eohhs/docs/dph/disease-reporting/guide/salmonellosis.pdf
+7. Salmonellosis (Non-typhoidal); 2016. http://www.mass.gov/eohhs/docs/dph/disease-reporting/guide/salmonellosis.pdf
+8. Never directly referenced, but major shout to https://web.stanford.edu/~hastie/glmnet/glmnet_beta.html for an excellent glmnet walk-through
 
 
-*. http://www.mass.gov/eohhs/docs/dph/cdc/reporting/rprtbldiseases-hcp.pdf
-
-
+_That's all folks_
+![](C:\Users\Maggie\OneDrive\Pictures\Ketchup\Sunglasses.jpg)
