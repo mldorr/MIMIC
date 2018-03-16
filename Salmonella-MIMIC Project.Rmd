@@ -318,6 +318,9 @@ ggplot(frequencyDF, aes(x=proportion, y=`Cases`, color=abs(`Cases` - proportion)
   In order to better visualize the most common terms, below we create word clouds of the most common terms for cases, controls, and both cases and controls.
 ```{r wordcloud}
 #Word Clouds
+library(htmlwidgets)
+library(webshot)
+webshot::install_phantomjs()
 #Cases
 tidyCasesFreq <- tidyCasesDF %>% 
   count(tidyCasesDF$word) %>%
@@ -325,7 +328,8 @@ tidyCasesFreq <- tidyCasesDF %>%
 names(tidyCasesFreq)[1] <- "word"
 names(tidyCasesFreq)[2] <- "freq"
 tidyCasesFreq <- tidyCasesFreq[order(-tidyCasesFreq$freq),]
-wordcloud2(tidyCasesFreq)
+cloudCases <- wordcloud2(tidyCasesFreq)
+cloudCases
 
 #Controls
 tidyControlsFreq <- tidyControlsDF %>% 
@@ -334,7 +338,8 @@ tidyControlsFreq <- tidyControlsDF %>%
 names(tidyControlsFreq)[1] <- "word"
 names(tidyControlsFreq)[2] <- "freq"
 tidyControlsFreq <- tidyControlsFreq[order(-tidyControlsFreq$freq),]
-wordcloud2(tidyControlsFreq)
+cloudControls <- wordcloud2(tidyControlsFreq)
+cloudControls
 
 #Combined
 tidyCombinedFreq <- subsetTokens %>%
@@ -343,10 +348,11 @@ tidyCombinedFreq <- subsetTokens %>%
 names(tidyCombinedFreq)[1] <- "word"
 names(tidyCombinedFreq)[2] <- "freq"
 tidyCombinedFreq <- tidyCombinedFreq[order(-tidyCombinedFreq$freq),]
-wordcloud2(tidyCombinedFreq)
+cloudCombined <- wordcloud2(tidyCombinedFreq)
+cloudCombined
 
 ```
-It is clear that the cases and controls both contain many similar terms. Thus, below we quantify the similarity.
+It is clear that the cases and controls both contain many similar terms. Thus, below we quantify the similarity.  
 ```{r quantifySim}
 #Quantify similarity between word frequecy sets
 cor.test(data=frequencyDF[frequencyDF$category=="Controls",],
@@ -379,7 +385,6 @@ glmProjectTotal <- glmProjectCount %>% group_by(subject_id) %>% summarize(Abs_to
 glmProjectCT <- left_join(glmProjectCount, glmProjectTotal)
 
 projectSkinnyFeatures <- glmProjectCT %>% bind_tf_idf(word, subject_id, Abs_total) 
-head(projectSkinnyFeatures)
 
 #Converting to matrix form 
 projectMatrix <- projectSkinnyFeatures %>% cast_sparse(subject_id, word, tf_idf)
@@ -393,38 +398,44 @@ set.seed(23)
 projectMatrixScale <- scale(projectMatrix)
 projectMatrixScale[is.nan(projectMatrixScale)] = 0
 
-#glmnet Plot
+#glmnet function
 projectFit <- glmnet(projectMatrixScale, projectOutcome, family="binomial")
-plot(projectFit)
-print(projectFit)
-#coef(projectFit, s=0.1)
-projectCoefs <- coef(projectFit, s=0.1)
+#glmnet Plot
+plot(projectFit, label=TRUE)
+#Plot with deviance
+plot(projectFit, xvar="dev", label=TRUE) 
 
+#Coefficients
+projectCoefs <- coef(projectFit, s=0.1)
+#Intercept
+projectCoefs[1] 
+#Specific coefficients
 projectCoefInds <- which(projectCoefs != 0)[-1]
 coefs <- data_frame(word=colnames(projectMatrixScale)[projectCoefInds -1], Coef=projectCoefs[projectCoefInds])
+coefs %>% arrange(Coef)
 
-coefs %>% arrange(Coef) %>% head()
-
-
-#Cross-validation Plot
+```
+The original logistic regression yeilded a model with eight select features, of which, all but 'sepsis' are negative.  
+  
+  Below we run 10-fold cross-validation examine which terms were selected by cross-validated model. 
+```{r glmnetCV}
+#Cross-validated model
 projectCVFit <- cv.glmnet(projectMatrixScale, projectOutcome, family="binomial", type.measure="class")
+#Cross-validation Plot
 plot(projectCVFit)#, main="Binomial Lasso Logistic Regression for Cases vs Controls")
 
-
-```
-  We found the lowest misclassification error (~0.20) to be associated with a model containing four features/coefficients.  
-  
-  Below we examine which terms were selected by the above model. 
-```{r glmnetTerms}
 projectCVCoefs <- coef(projectCVFit, s="lambda.min")
+#Intercept
+projectCVCoefs[1]
 
+#Combine to get a single list of coefficients for the selected features
 projectCVCoefInds <- which(projectCVCoefs != 0)[-1]
 CVcoefs <- data_frame(word=colnames(projectMatrixScale)[projectCVCoefInds -1], CVCoef=projectCVCoefs[projectCVCoefInds])
-
-CVcoefs %>% arrange(CVCoef) %>% head()
+CVcoefs %>% arrange(CVCoef)
 
 ```
-  According to our calculations, the presence/absence of the terms "status," "examination," and "sinus,"
+  With a seed of 23, we found the lowest misclassification error (~0.20) to be associated with a model containing four features/coefficients.  
+  According to our calculations, the absence of the terms "status," "examination," and "sinus," and the presence of the term "sepsis" are the greatest indicators of casehood. These terms are the more extreme results from the original glmnet run, which makes sense after replication.
   
 ##Discussion
 Given the similarity between cases and controls, in future work, it may be essential to classify information in three ways: 1) terms which are significantly associated with cases, 2) terms which are essential for case investigation, regardless of association, and 3) terms which are not relevant to case investigation. Along similar lines, it may also be helpful to create a set of stop words which are relevant in medicine, such as measurement units.  
