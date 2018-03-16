@@ -29,6 +29,7 @@ library(tibble)
 # Set WD
 setwd("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish") 
 
+
 ###Salmonella###
 # Load in Reportable Condition Trigger Code (RCTC) tables
 # labObsTestName <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Lab Obs Test Name 20171013.csv", header=TRUE)
