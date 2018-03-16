@@ -1,0 +1,638 @@
+---
+title: "MIMIC & Chlamydia"
+author: "Maggie Dorr"
+date: "February 15, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load packages
+library(knitr)
+library(ggplot2)
+library(data.table)
+library(plyr)
+library(dplyr)
+library(tidytext)
+library(stringr)
+library(tidyr)
+library(scales)
+library(glmnet)
+#library(icd)
+
+# Set WD
+setwd("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish") 
+
+
+# Connection process from: https://www.r-bloggers.com/getting-started-with-postgresql-in-r/ 
+# require(RPostgreSQL)
+# pw <- {
+#   "postgres"
+# }
+# 
+# # Load the PostgreSQL driver
+# drv <- dbDriver("PostgreSQL")
+# 
+# # Connect to the postgres database
+# con <- dbConnect(drv, dbname="mimic",
+#                  host="localhost", port=5432,
+#                  user="postgres", password=pw)
+# 
+# rm(pw) #removes password
+# 
+
+
+
+# # Load in Reportable Condition Trigger Code (RCTC) tables
+# labObsTestName <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Lab Obs Test Name 20171013.csv", header=TRUE)
+# labObsTestNameChlam <- filter(labObsTestName, ChlamYN==1)
+# names(labObsTestNameChlam)[1] <- "Code"
+# organismSubstance <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Organism Substance 20171013.csv", header=TRUE)
+# organismSubstanceChlam <- filter(organismSubstance, ChlamYN==1)
+# names(organismSubstanceChlam)[1] <- "Code"
+# organismSubstanceChlam$Code <- as.factor(organismSubstanceChlam$Code)
+# diagProblem <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Diagnosis Problem 20171013.csv", header=TRUE)
+# diagProblemChlam <- filter(diagProblem, ChlamYN==1)
+# names(diagProblemChlam)[1] <- "Code"
+# diagProblemChlamNotICD <- filter(diagProblemChlam, CodeSystem!="ICD10CM")
+# # Convert ICD-10 codes to ICD-9 in diagProblemChlam
+# chlamydiaICD10 <- filter(diagProblemChlam, CodeSystem=="ICD10CM")
+# chlamydiaICD10$Code <- sub("[.]", "", chlamydiaICD10$Code)
+# convertICD <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/icd10cmtoicd9gem.csv", header=TRUE) #read in file from the National Bureau of Economic Research
+# chlamydiaICD10$icd10cm <- as.factor(chlamydiaICD10$Code)
+# chlamydiaICD10 <- merge(chlamydiaICD10, convertICD, by="icd10cm") #NOTE! This does lose A56, which did not exist/has no converstion in ICD9. However, since it did not exist in ICD9, one can assume that it will not exist in MIMIC
+# chlamydiaICD10$Code <- chlamydiaICD10$icd9cm
+# chlamydiaICD10 <- chlamydiaICD10 %>% select(Code, Descriptor, CodeSystem, Version, Status, RemapInfo, ChlamYN)
+# chlamydiaICD10$CodeSystem <- "ICD9CM"
+# 
+# # Merge RCTC tables
+# chlamydia <- rbind(diagProblemChlamNotICD, chlamydiaICD10, labObsTestNameChlam, organismSubstanceChlam)
+# chlamydia <- chlamydia %>% select(Code, Descriptor, CodeSystem)
+# 
+# # Export chlamydia RCTC table to csv
+# write.csv(chlamydia, file="C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/chlamydiaRCTC.csv", sep=",", row.names=F, col.names=T)
+
+# Load in Chlamydia NND dataset
+#chlam <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/Chlamydia trachomatis infection-relationships.csv", header = TRUE)
+
+
+######
+###PERTUSSIS###
+# Load in Reportable Condition Trigger Code (RCTC) tables
+# labObsTestName <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Lab Obs Test Name 20171013.csv", header=TRUE)
+# labObsTestNamePertussis <- filter(labObsTestName, PertussisYN==1)
+# names(labObsTestNamePertussis)[1] <- "Code"
+# organismSubstance <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Organism Substance 20171013.csv", header=TRUE)
+# organismSubstancePertussis <- filter(organismSubstance, PertussisYN==1)
+# names(organismSubstancePertussis)[1] <- "Code"
+# organismSubstancePertussis$Code <- as.factor(organismSubstancePertussis$Code)
+# diagProblem <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Diagnosis Problem 20171013.csv", header=TRUE)
+# diagProblemPertussis <- filter(diagProblem, PertussisYN==1)
+# names(diagProblemPertussis)[1] <- "Code"
+# diagProblemPertussisNotICD <- filter(diagProblemPertussis, CodeSystem!="ICD10CM")
+# # Convert ICD-10 codes to ICD-9 in diagProblemPertussis
+# pertussisICD10 <- filter(diagProblemPertussis, CodeSystem=="ICD10CM")
+# pertussisICD10$Code <- sub("[.]", "", pertussisICD10$Code)
+# convertICD <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/icd10cmtoicd9gem.csv", header=TRUE) #read in file from the National Bureau of Economic Research
+# pertussisICD10$icd10cm <- as.factor(pertussisICD10$Code)
+# pertussisICD10 <- merge(pertussisICD10, convertICD, by="icd10cm")
+# pertussisICD10$Code <- pertussisICD10$icd9cm
+# pertussisICD10 <- pertussisICD10 %>% select(Code, Descriptor, CodeSystem, Version, Status, RemapInfo, ChlamYN, PertussisYN)
+# pertussisICD10$CodeSystem <- "ICD9CM"
+# 
+# # Merge RCTC tables
+# pertussis <- rbind(diagProblemPertussisNotICD, pertussisICD10, labObsTestNamePertussis, organismSubstancePertussis)
+# pertussis <- pertussis %>% select(Code, Descriptor, CodeSystem)
+# 
+# # Export pertussis RCTC table to csv
+# write.csv(pertussis, file="C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/pertussisRCTC.csv", sep=",", row.names=F, col.names=T)
+###END###
+
+
+
+######
+###Salmonella###
+# Load in Reportable Condition Trigger Code (RCTC) tables
+# labObsTestName <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Lab Obs Test Name 20171013.csv", header=TRUE)
+# labObsTestNameSalmonella <- filter(labObsTestName, SalmonellaYN==1)
+# names(labObsTestNameSalmonella)[1] <- "Code"
+# organismSubstance <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Organism Substance 20171013.csv", header=TRUE)
+# organismSubstanceSalmonella <- filter(organismSubstance, SalmonellaYN==1)
+# names(organismSubstanceSalmonella)[1] <- "Code"
+# organismSubstanceSalmonella$Code <- as.factor(organismSubstanceSalmonella$Code)
+# diagProblem <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Diagnosis Problem 20171013.csv", header=TRUE)
+# diagProblemSalmonella <- filter(diagProblem, SalmonellaYN==1)
+# names(diagProblemSalmonella)[1] <- "Code"
+# diagProblemSalmonellaNotICD <- filter(diagProblemSalmonella, CodeSystem!="ICD10CM")
+# # Convert ICD-10 codes to ICD-9 in diagProblemSalmonella
+# salmonellaICD10 <- filter(diagProblemSalmonella, CodeSystem=="ICD10CM")
+# salmonellaICD10$Code <- sub("[.]", "", salmonellaICD10$Code)
+# convertICD <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/icd10cmtoicd9gem.csv", header=TRUE) #read in file from the National Bureau of Economic Research
+# salmonellaICD10$icd10cm <- as.factor(salmonellaICD10$Code)
+# salmonellaICD10 <- merge(salmonellaICD10, convertICD, by="icd10cm")
+# salmonellaICD10$Code <- salmonellaICD10$icd9cm
+# salmonellaICD10 <- salmonellaICD10 %>% select(Code, Descriptor, CodeSystem, Version, Status, RemapInfo, ChlamYN, PertussisYN, SalmonellaYN)
+# salmonellaICD10$CodeSystem <- "ICD9CM"
+# 
+# # Merge RCTC tables
+# salmonella <- rbind(diagProblemSalmonellaNotICD, salmonellaICD10, labObsTestNameSalmonella, organismSubstanceSalmonella)
+# salmonella <- salmonella %>% select(Code, Descriptor, CodeSystem)
+# 
+# # Export salmonella RCTC table to csv
+# write.csv(salmonella, file="C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/salmonellaRCTC.csv", sep=",", row.names=F, col.names=T)
+###END###
+
+# Load in dataset
+projectDataAll <- fread("C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectData_Salmonella.csv", header=TRUE, sep=',')[,-1] #10.3GB file, 3960890 rows. Takes ~4 minutes to read. Consider using below:
+# projectData <- fread("C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectData_Salmonella_noICD.csv", header=TRUE, sep=',')[,-1] 
+
+projectDataLimited <- projectDataAll %>% select(case, subject_id, hadm_id, icd9_code, text)
+# projectDataLimited <- projectData %>% select(case, subject_id, hadm_id, text)
+#projectDataLimited[!duplicated(projectDataLimited), ]
+projectDataLimited <- unique(projectDataLimited[ ,1:5]) #holy crap I had a ton of duplicates.
+
+#projectDataText <- projectData %>% select(subject_id, text)
+#write.csv(projectSubset, file="C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectDataSubset.csv", sep=",", row.names=F, col.names = T)
+projectSubset <- fread("C:/Users/Maggie/Downloads/projectDataSubset.csv", header=TRUE, sep=',')[,-1] #You may need to grab this file from downloads now if this doesn't work correctly. Should be 2130405 words.
+subsetLimited <- projectSubset %>% select(case, subject_id, hadm_id, text)
+subsetLimited <- unique(subsetLimited[ ,1:4]) #76309
+subsetLimited$subject_id <- as.character(subsetLimited$subject_id)
+
+data(stop_words)
+
+```
+
+
+```{r mutate}
+#Create dataframe with character vectors
+projectDF <- projectDataLimited %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+projectDF$text <- as.character(projectDF$text)
+
+#Create dataframe with character vectors for subset
+subsetDF <- subsetLimited %>%
+  group_by(subject_id) %>%
+  mutate(linenumber = row_number(),
+         visit = hadm_id) %>%
+  ungroup()
+subsetDF$text <- as.character(subsetDF$text)
+subsetDF$text <- tolower(subsetDF$text)
+
+subsetTokens <- subsetDF %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  na.omit()
+```
+
+
+```{r tidytext1}
+#Separate each line of text into tokens
+tidyProjectDF <- projectDF %>% unnest_tokens(word, text) %>%
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  na.omit()#gets rid of the random numbers and other characters which were being treated as words
+
+#Remove stopwords 
+tidyProjectDF <- tidyProjectDF %>% anti_join(stop_words)
+
+#Find most common words
+tidyProjectDF %>% count(word, sort=TRUE)
+
+#Visualize most common words
+tidyProjectDF %>% 
+  count(word, sort=TRUE) %>%
+  filter(n>20000) %>%
+  mutate(word=reorder(word,n)) %>%
+  ggplot(aes(word,n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+```
+
+```{r tidytext2}
+#Separate cases and controls
+# casesDF <- filter(projectDataLimited, case=="1")
+# controlsDF <- filter(projectDataLimited, case=="0")
+casesDF <- filter(subsetLimited, case=="1")
+controlsDF <- filter(subsetLimited, case=="0")
+
+#Cases
+casesDF <- casesDF %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+
+casesDF$text <- as.character(casesDF$text)
+
+#Separate each line of text into tokens & remove stop words
+tidyCasesDF <- casesDF %>% 
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  na.omit()
+
+
+#Controls
+controlsDF <- controlsDF %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+
+controlsDF$text <- as.character(controlsDF$text)
+
+#Separate each line of text into tokens & remove stop words
+tidyControlsDF <- controlsDF %>% 
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  na.omit()
+  
+
+
+#Putting them back together
+frequencyDF <- bind_rows(mutate(tidyCasesDF, category="Cases"),
+                         mutate(tidyControlsDF, category="Controls")) %>%
+  count(category, word) %>%
+  group_by(category) %>%
+  mutate(proportion = n/sum(n)) %>%
+  select(-n) %>%
+  spread(category, proportion) %>%
+  gather(category, proportion, `Controls`)
+
+#Plotting
+#expect a warning about rows with missing values being removed
+ggplot(frequencyCC, aes(x=proportion, y=`Cases`, color=abs(`Cases` - proportion)))+
+  geom_abline(color="gray40", lty=2) +
+  geom_jitter(alpha=0.1, size=2.5, width=0.3, height=0.3) +
+  geom_text(aes(label=word), check_overlap=TRUE, vjust=1.5) +
+  scale_x_log10(labels=percent_format()) +
+  scale_y_log10(labels=percent_format()) +
+  scale_color_gradient(limits=c(0, 0.001), low="darkslategray4", high="gray75") + 
+  facet_wrap(~category, ncol=1) +
+  theme(legend.position="none") +
+  labs(y="Cases", x=NULL)
+#Words that are closer to the line have similar frequencies in the categories
+
+
+#Quantify similarity between word frequecy sets
+cor.test(data=frequencyCC[frequencyCC$category=="Controls",],
+         ~ proportion + `Cases`)
+
+
+```
+
+
+
+```{r glmnet}
+# REMEMBER YOU SWAPPED "subsetDF" for "projectDF"
+glmProjectDF <- subsetDF %>% unnest_tokens(word, text) %>%
+  mutate(word = str_extract(word, "[a-z]+"))# %>%  "[a-z']+"
+  #na.omit()#gets rid of the random numbers and other characters which were being treated as words, then get rid of NAs
+head(glmProjectDF)
+
+#Remove stopwords 
+glmProjectDF <- glmProjectDF %>% anti_join(stop_words)# %>% na.omit()
+
+glmProjectCnt <- glmProjectDF %>%
+  count(glmProjectDF$word) %>%
+  filter(n>100) #for n>10, 16864 instead of ~60k --> only cuts down total by 100,000
+  #for n>100, 6875 --> cuts down total by 450k
+names(glmProjectCnt)[1] <- "word"
+glmProjectData <- join(glmProjectDF, glmProjectCnt, by="word", type="right", match="all")
+glmProjectDF <- subset(glmProjectData, select=-c(n))
+glmProjectDF <- na.omit(glmProjectDF, cols="word") #nothing removed
+#Limitation --> when things are misspelled, they are not counted as a single element.
+
+#Find most common words (td-idf???)
+glmProjectCount <- glmProjectDF %>% count(word, subject_id, case, sort=TRUE)
+
+glmProjectTotal <- glmProjectCount %>% group_by(subject_id) %>% summarize(Abs_total = sum(n)) 
+
+glmProjectCT <- left_join(glmProjectCount, glmProjectTotal)
+# library(bit64)
+# glmProjectCT$n <- as.integer64(glmProjectCT$n)
+# glmProjectCT$Abs_total <- as.integer64(glmProjectCT$Abs_total)
+# glmProjectCT$case <- as.integer64(glmProjectCT$case)
+
+projectSkinnyFeatures <- glmProjectCT %>% bind_tf_idf(word, subject_id, Abs_total) #1220047 --> 1015426 (& all went through)
+
+#projectSkinnyFeaturesNoNA <- projectSkinnyFeatures %>% na.omit() #1206820 #IS THIS OKAY TO DO?
+head(projectSkinnyFeatures)
+#head(projectSkinnyFeaturesNoNA)
+
+
+#Converting to matrix form (dtm???)
+projectMatrix <- projectSkinnyFeatures %>% cast_sparse(subject_id, word, tf_idf) #30,916,608 elements --> 3520000 (MUCH more reasonable)
+#projectMatrix <- na.omit(projectMatrix) #doesn't change anything
+printSpMatrix2(projectMatrix)
+
+projectOrd <- match(rownames(projectMatrix), subsetDF$subject_id) #REMEMBER subsetDF WAS SWAPPED FOR projectDF
+projectOrd
+projectOutcome <- ifelse(subsetDF$case[projectOrd] == 1, 1, 0) #DITTO ABOVE
+projectOutcome
+
+#Build sparse logistic model - lasso model
+set.seed(23)
+projectMatrixScale <- scale(projectMatrix)
+projectMatrixScale[1:10,1:10]
+projectMatrixScale[is.nan(projectMatrixScale)] = 0
+projectMatrixScale[1:10,1:10]
+
+#projectMatrixScale <- na.omit(projectMatrixScale)
+projectCVFit <- cv.glmnet(projectMatrixScale, projectOutcome, family="binomial", type.measure="class")
+plot(projectCVFit)
+
+
+
+#lassoLogReg <- cv.glmnet(x=frequencyCC$proportion, y=frequencyCC$Cases, family="binomial", type.measure="class")
+
+
+```
+Note! A fun way to display the most common words at the end could be to use the wordcloud2() function from the wordcloud2 package. You should try it for shits and giggles if you have time.
+
+```{r Aspell}
+aspellCheck <- function(input, output = "eval", sep = FALSE, keep_caps = TRUE,
+  pattern_flag = NULL, word_flag = NULL, split_missing = FALSE, 
+  mode = "ultra", dict = "en_US", ...){
+  
+  input <- lapply(1:length(input), function(i) {
+    words <- unlist(strsplit(input[i], "\\s+"))
+    index <- rep(i, length(words))
+    cbind(words,index)
+  })
+  
+  input <- data.frame(do.call("rbind", input), stringsAsFactors = FALSE)
+  
+  input_caps_first <- grepl("^[[:upper:]][[:lower:]]", input$words)
+  input_caps_all <- grepl("^[[:upper:]]+$", input$words)
+  
+  if(!is.null(pattern_flag)) {
+    pattern_flag <- lapply(pattern_flag, function(x, ...) {
+      grepl(x, input$words)
+    })
+    pattern_flag <- rowSums(do.call("cbind", pattern_flag), na.rm = TRUE) > 0
+  } else {
+    pattern_flag <- rep(FALSE, length(input$words))
+  }
+  
+  if(!is.null(word_flag)) {
+    word_flag <- input$words %in% word_flag
+  } else {
+    word_flag <- rep(FALSE, length(input$words))
+  }
+    
+  input$words <- tolower(input$words)
+  
+  input_duplicated <- duplicated(input$words)
+  
+  input_words <- input$words[!pattern_flag & !word_flag & !input_duplicated]
+  
+  check <- aspell(as.factor(input_words), 
+      control = paste(
+          paste0("--master=",dict),
+          paste0("--sug-mode=", mode)
+        )
+  )
+    
+    if(nrow(check) == 0) {
+      if(output == "eval") {
+        out <- rep(TRUE,length(input$words))
+      }
+      if(output == "sugg") {
+        out <- rep(NA, length(input$words))
+      }
+      if(output == "fix") {
+        out <- input$words
+      }
+    } else {
+      
+      sep_pattern <- ifelse(sep, "^[a-z ]+$", "^[a-z]+$")
+      
+      if(output == "eval"){
+        out <- rep(TRUE, length(input$words))
+        out[!is.na(match(input$words, check$Original))] <- FALSE
+        out[pattern_flag | word_flag] <- TRUE
+        final_words <- tapply(out, input$index, "c")
+      }
+      if(output == "sugg"){
+        out <- check$Suggestions[match(input$words, check$Original)]
+        out[sapply(out, is.null)] <- NA
+        final_words <- tapply(out, input$index, "c")
+      }
+      if(output == "fix"){
+        recs <- mapply(grepl, sep_pattern, check$Suggestions)
+        recs[sapply(recs, length) == 0] <- FALSE
+          if(is.list(recs)){
+            recs <- unlist(sapply(recs, which.max))
+          }else{
+            recs <- which.max(recs)
+          }
+        recs <- sapply(1:length(recs), function(i) {
+          out <- check$Suggestions[[i]][recs[i]]
+        })
+        
+        if(split_missing) {
+          recs[sapply(recs, is.null)] <-  Split_Words(
+            check$Original[sapply(recs, is.null)]
+            )
+        } else {
+        recs[sapply(recs, is.null)] <- check$Original[sapply(recs, is.null)]
+        }
+        
+        recs <- recs[match(input$words, check$Original)]
+        
+        recs[sapply(recs, is.null)] <- input$words[sapply(recs, is.null)]
+        
+        recs <- unlist(recs)
+        
+        recs[pattern_flag | word_flag] <- input$words[pattern_flag | word_flag]
+
+        if(keep_caps) {
+          recs[input_caps_first] <- gsub("(^[[:alpha:]])", "\\U\\1", 
+                                         recs[input_caps_first], perl = TRUE)
+          
+          recs[input_caps_all] <- gsub("([[:alpha:]])", "\\U\\1", 
+                                       recs[input_caps_all], perl = TRUE)
+        }
+        
+        out <- recs
+        
+        final_words <- tapply(out, input$index, "paste", collapse = " ")
+        
+      }
+      
+      final_index <- as.numeric(names(final_words))
+      
+      final <- data.frame(
+        "words" = final_words,
+        "index" = final_index,
+        stringsAsFactors = FALSE)
+      
+      final <- final[order(final$index),]
+    }
+
+  as.vector(final$words)
+  
+}
+
+
+
+
+```
+
+
+```{r spelling}
+spellcheckedDF <- unique(subsetTokens[ ,6]) #All unique words
+spellcheckedDF$wordFixed <- spellcheckedDF$word
+#write.csv(spellcheckedDF, file="C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectSubsetTerms.csv", sep=",", row.names=F, col.names = T)
+
+#http://housesofstones.github.io/2012/09/13/automatic-cleaning-of-messy-text-data/
+library(devtools)
+install_github("tmt", "schaunwheeler") #didn't work
+aspellCheck(spellcheckedDF$wordFixed, "fix")
+
+
+library(hunspell)
+correctWords <- hunspell(spellcheckedDF$wordFixed)
+sort(unique(unlist(correctWords)))
+
+
+#https://trinkerrstuff.wordpress.com/2014/09/04/spell-checker-for-r-qdapcheck_spelling/
+library(qdap)
+library(hunspell)
+
+spellCheck <- check_spelling_interactive(spellcheckedDF$wordFixed)
+preprocessed(spellCheck)
+fixit <- attributes(spellCheck)$correct
+fixit(spellcheckedDF$wordFixed)
+
+
+
+#Correcting spelling - https://stackoverflow.com/questions/24443388/stemming-with-r-text-analysis/24454727#24454727
+library(tm)
+library(qdap)
+
+terms <- c("accounts", "account", "accounting", "acounting", "acount", "acounts", "accounnt")
+
+fake_text <- unlist(lapply(terms, function(x) {
+    paste(sample(c(x, sample(DICTIONARY[[1]], sample(1:5, 1)))), collapse=" ")
+}))
+
+fake_text
+myCorp <- Corpus(VectorSource(fake_text))
+terms2 <- unique(bag_o_words(as.data.frame(myCorp)[[2]]))
+misses <- terms2[is.na(match(terms2, DICTIONARY[[1]]))]
+
+fixText <- unlist(glmProjectCount$word)
+fixCorp <- Corpus(VectorSource(fixText))
+fixTerms <- unique(bag_o_words(as.data.frame(fixCorp)[[2]])) #well this seems to be the same thing as fixText, but whatever...
+fixMisses <- fixTerms[is.na(match(fixTerms, DICTIONARY[[1]]))]
+
+chars <- nchar(DICTIONARY[[1]])
+
+replacements <- sapply(fixMisses, function(x, range = 3, max.distance = .2) {
+    x <- stemDocument(x)
+    wchar <- nchar(x)
+    dict <- DICTIONARY[[1]][chars >= (wchar - range) & chars <= (wchar + range)]
+    dict <- dict[agrep(x, dict, max.distance=max.distance)]
+    names(which.min(sapply(dict, qdap:::Ldist, x)))
+})
+
+replacer <- content_transformer(function(x) { 
+    mgsub(names(replacements), replacements, x, ignore.case = FALSE, fixed = FALSE)
+})
+
+fixCorp <- tm_map(fixCorp, replacer)
+#inspect(fixCorp <- tm_map(fixCorp, stemDocument))
+print(fixCorp)
+
+#capture.output(summary(replacements), file="C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectReplacements.txt")
+#lapply(replacements, function(x) write.table(data.frame(x), "C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectReplacements.csv", append=T, sep=','))
+#Could have used writeCorpus(ovid)
+
+#I'm not sure this actually fixes anything... how do I combine this back in?
+```
+
+
+
+```{r tidyNGrams}
+projectBigrams <- projectDF %>% unnest_tokens(bigram, text, token="ngrams", n=2)
+
+bigramsSeparated <- projectBigrams %>% separate(bigram, c("word1", "word2"), sep=" ")
+
+bigramsFiltered <- bigramsSeparated %>% 
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)
+
+#New bigrams
+bigramCounts <- bigramsFiltered %>% count(word1, word2, sort=TRUE)
+bigramCounts
+
+bigramsUnited <- bigramsFiltered %>% unite(bigram, word1, word2, sep=" ")
+bigramsUnited
+
+```
+
+################################
+Tidy Text Considerations
+- Find a sentiment dictionary for medicine???
+- Create your own stop words (3.4)
+- Get rid of numbers?
+
+
+
+
+
+
+############################
+Chlamydia To-Do List
+X Backwards map ICD10 (in chlamydia dataset) to ICD9 (used in MIMIC)
+X Export table to use in python 
+
+
+
+MIMIC To-Do List
+- Datasets to combine:
+  - ADMISSIONS (check for repeat SUBJECT_ID)
+      - Each row is a unique HADM_ID, but there may be repeat subject IDs
+      - DIAGNOSIS (brief, prelim diagnosis)
+      - Demographics: INSURANCE, LANGUAGE, RELIGION, MARITAL_STATUS, ETHNICITY
+  - CHARTEVENTS
+  - CPTEVENTS 
+      - D_CPT (explanation of CPT events)
+  - D_ITEMS & D_LABITEMS (these seem like they may be required to get the official ICD9/SNOMED/etc code for procedures, etc)  
+  - Optional: DATETIMEEVENTS
+  - **DIAGNOSES_ICD** (Contains ICD diagnoses for patients)
+    
+- Once datasets are combined, give a new unique ID to each row?
+- Note the number of times a patient is admitted (based on SUBJECT_ID occurances in ADMISSIONS dataset)    
+    
+    
+    
+######################################################################
+
+Pick cases and [perhaps matched] controls. 
+Could use something with interactions or two separate models could be useful. 
+Consider doing predictive modeling. 
+
+First pass, grab those people, and build a feature-wise screen Eg presence/absense of every word in the dictionary, and look at the association between those features and chlamydia status, one at a time. 
+
+
+Or predictive modeling
+- Generate large feature vector of 0s and 1st
+- Column 1 Disease status, 
+     Then all the other columns are presence/absence of words in a lab report
+     Append text medical features, demographic data, etc
+- Penialized logistic regression will try to find a small subset of words that are associated with disease status
+   - It will do this automatically
+Package: TidyText --> find a good tutorial online
+    - look at ngrams
+    - May end up with a large, sparce vector, and then add that into a predictive model, and then make another that uses those in the predicitve modeling problem
+    
+    

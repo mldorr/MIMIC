@@ -1,0 +1,452 @@
+---
+title: "Salmonella Case Investigation with NLP"
+author: "Maggie Dorr"
+date: "March 16, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(digits=5)
+#options(knitr.table.format = "html") 
+# Load packages
+library(knitr)
+library(ggplot2)
+library(data.table)
+library(plyr)
+library(dplyr)
+library(tidytext)
+library(stringr)
+library(tidyr)
+library(scales)
+library(glmnet)
+library(wordcloud2)
+library(wordcloud)
+library(tm)
+library(kableExtra)
+library(tibble)
+
+# Set WD
+setwd("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish") 
+
+###Salmonella###
+# Load in Reportable Condition Trigger Code (RCTC) tables
+# labObsTestName <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Lab Obs Test Name 20171013.csv", header=TRUE)
+# labObsTestNameSalmonella <- filter(labObsTestName, SalmonellaYN==1)
+# names(labObsTestNameSalmonella)[1] <- "Code"
+# organismSubstance <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Organism Substance 20171013.csv", header=TRUE)
+# organismSubstanceSalmonella <- filter(organismSubstance, SalmonellaYN==1)
+# names(organismSubstanceSalmonella)[1] <- "Code"
+# organismSubstanceSalmonella$Code <- as.factor(organismSubstanceSalmonella$Code)
+# diagProblem <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Diagnosis Problem 20171013.csv", header=TRUE)
+# diagProblemSalmonella <- filter(diagProblem, SalmonellaYN==1)
+# names(diagProblemSalmonella)[1] <- "Code"
+# diagProblemSalmonellaNotICD <- filter(diagProblemSalmonella, CodeSystem!="ICD10CM")
+# # Convert ICD-10 codes to ICD-9 in diagProblemSalmonella
+# salmonellaICD10 <- filter(diagProblemSalmonella, CodeSystem=="ICD10CM")
+# salmonellaICD10$Code <- sub("[.]", "", salmonellaICD10$Code)
+# convertICD <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/icd10cmtoicd9gem.csv", header=TRUE) #read in file from the National Bureau of Economic Research
+# salmonellaICD10$icd10cm <- as.factor(salmonellaICD10$Code)
+# salmonellaICD10 <- merge(salmonellaICD10, convertICD, by="icd10cm")
+# salmonellaICD10$Code <- salmonellaICD10$icd9cm
+# salmonellaICD10 <- salmonellaICD10 %>% select(Code, Descriptor, CodeSystem, Version, Status, RemapInfo, ChlamYN, PertussisYN, SalmonellaYN)
+# salmonellaICD10$CodeSystem <- "ICD9CM"
+# 
+# # Merge RCTC tables
+# salmonella <- rbind(diagProblemSalmonellaNotICD, salmonellaICD10, labObsTestNameSalmonella, organismSubstanceSalmonella)
+# salmonella <- salmonella %>% select(Code, Descriptor, CodeSystem)
+# 
+# # Export salmonella RCTC table to csv
+# write.csv(salmonella, file="C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/salmonellaRCTC.csv", sep=",", row.names=F, col.names=T)
+###END###
+
+# The above data was then used in python to build the below dataset:
+#write.csv(projectSubset, file="C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectDataSubset.csv", sep=",", row.names=F, col.names = T)
+
+#Read in project subset from CSV
+projectSubset <- fread("C:/Users/Maggie/Downloads/projectDataSubset.csv", header=TRUE, sep=',')[,-1] 
+subsetLimited <- projectSubset %>% select(case, subject_id, hadm_id, text)
+subsetLimited <- unique(subsetLimited[ ,1:4]) #76309
+subsetLimited$subject_id <- as.character(subsetLimited$subject_id)
+
+data(stop_words)
+
+```
+## Introduction
+In accordance with state and federal regulations, healthcare providers and laboratories are required to report positive incidences of notifiable conditions. Each state has a specific list of communicable and other infectious diseases that they require practitioners to report. Traditionally, the case reporting process has been conducted via paper reports and internet-based entry systems, which are often slow, incomplete, or not reported at all due to the significant effort required of clinicians.^1^ Fortunately, recent developments have made electronic case reporting (eCR) a more viable option for healthcare facilities. eCR is the electronic transmission of a case report directly from a patient's electronic health record (EHR) to a public health jurisdiction or healthcare intermediary. The aim of eCR is to reduce clinician burden, while also increasing report timeliness and completion.^2-4^ In turn, these improvements allow for increased detection of outbreaks, earlier intervention, and decreased disease transmission.^3^ At present, there is a large eCR development project, [Digital Bridge](www.digitalbridge.us), which is piloting eCR at seven sites across the nation.^3^ On a broad scale, the technical infrastructure uses standardized and publicly available trigger codes to determine whether a case report should be initialized, and then an HL7 standard to transmit the data. After a case is reported, case investigation is used to determine disease etiology, case management, potential sources of infection, management of exposure(s), and environmental measures. At present, the HL7 Initial Electronic Case Report only holds a limited set of information; much less than what is required for a case investigation. 
+
+Described below is an initial step in a long-term project which aims to help improve eCR and develop electronic case investigation (eCI). We used the MIMIC-III (Medical Information Mart for Intensive Care - III) dataset, which contains information from 53,423 unique adult (aged 16 years and above) critical care admissions to the Beth Israel Deaconess Medical Center in Boston, Massachusetts between 2001 and 2012.^5-6^ This dataset was selected based on its inclusion of both structured and unstructured data, including free-text narrative, as well as its inclusion of an abundance of data points. We started by using the same trigger codes used by Digital Bridge, available from the Public Health Information Network Vocabulary Access and Distribution System (PHIN VADS) to identify our cases. Currently, there are only five conditions with verified trigger codes, of which we selected Salmonella (i.e., salmonellosis), as it is most prevalent in critical care patients compared to the other four conditions. 
+
+After salmonella-positive cases were identified, an equal number of controls were selected randomly from the remaining admissions. This left us with over 2,400 individuals, which unfortunately was too large of a dataset to conduct the analyses we intended. Thus, an equal number of cases and controls were selected randomly from the above dataset. Our total sample for these analyses was 512, 256 cases and 256 controls. Below you'll find our table one. 
+
+
+##Analyses
+###Socio-demographics
+```{r table1}
+#Demographics
+subsetDemo <- projectSubset %>% select (case, subject_id, age, ethnicity, insurance, religion, language)
+subsetDemo <- subsetDemo[!duplicated(subsetDemo$subject_id)]
+
+#Compress demographic variables
+#Age
+subsetDemo$age2 <- character(0)
+subsetDemo$age2[subsetDemo$age>=16 & subsetDemo$age<25] <- "16-24"
+subsetDemo$age2[subsetDemo$age>=25 & subsetDemo$age<35] <- "25-34"
+subsetDemo$age2[subsetDemo$age>=35 & subsetDemo$age<45] <- "35-44"
+subsetDemo$age2[subsetDemo$age>=45 & subsetDemo$age<55] <- "45-54"
+subsetDemo$age2[subsetDemo$age>=55 & subsetDemo$age<65] <- "55-64"
+subsetDemo$age2[subsetDemo$age>=65 & subsetDemo$age<75] <- "65-74"
+subsetDemo$age2[subsetDemo$age>=75] <- "75+"
+#Ethnicity
+library(car)
+subsetDemo$ethnicity2 <- as.character(subsetDemo$ethnicity)
+subsetDemo$ethnicity2 <- recode(subsetDemo$ethnicity2, "c('BLACK/HAITIAN', 'BLACK/CAPE VERDEAN')='BLACK/AFRICAN AMERICAN'")
+subsetDemo$ethnicity2 <- recode(subsetDemo$ethnicity2, "c('PATIENT DECLINED TO ANSWER', 'UNABLE TO OBTAIN')='UNKNOWN/NOT SPECIFIED'")
+subsetDemo$ethnicity2 <- recode(subsetDemo$ethnicity2, "c('HISPANIC/LATINO - PUERTO RICAN', 'HISPANIC/LATINO - CUBAN', 'HISPANIC/LATINO - GUATEMALAN', 'HISPANIC/LATINO - SALVADORAN')='HISPANIC OR LATINO'")
+subsetDemo$ethnicity2 <- recode(subsetDemo$ethnicity2, "c('WHITE - BRAZILIAN', 'WHITE - OTHER EUROPEAN', 'WHITE - RUSSIAN')='WHITE'")
+subsetDemo$ethnicity2 <- recode(subsetDemo$ethnicity2, "c('ASIAN - ASIAN INDIAN', 'ASIAN - CAMBODIAN', 'ASIAN - CHINESE')='ASIAN'")
+subsetDemo$ethnicity2 <- recode(subsetDemo$ethnicity2, "c('MIDDLE EASTERN', 'AMERICAN INDIAN/ALASKA NATIVE', 'MULTI RACE ETHNICITY', 'OTHER')='MULTIPLE ETHNICITIES/OTHER'")
+  #Note: Getting a bunch of 'NAs introduced by coercion' errors, but everything seems to run alright, so I've kept it as-is.
+#Language
+subsetDemo$language2 <- as.character(subsetDemo$language)
+subsetDemo$language2 <- sub("^$", "UNKN", subsetDemo$language2)
+subsetDemo$language2 <- recode(subsetDemo$language2, "c('ALBA','FREN','ITAL','PORT','RUSS')='OEUR'")
+subsetDemo$language2 <- recode(subsetDemo$language2, "c('ARAB','CAPE','PTUN','PERS','HAIT','CANT','MAND','THAI','VIET','CAMB')='OTHR'")
+#Religion
+subsetDemo$religion2 <- as.character(subsetDemo$religion)
+subsetDemo$religion2 <- recode(subsetDemo$religion2, "c('7TH DAY ADVENTIST','BAPTIST','BUDDHIST','CHRISTIAN SCIENTIST','EPISCOPALIAN','GREEK ORTHODOX','HINDU','MUSLIM','ROMANIAN EAST. ORTH','UNITARIAN-UNIVERSALIST')='OTHER'")
+subsetDemo$religion2 <- sub("^$","UNKNOWN",subsetDemo$religion2)
+subsetDemo$religion2 <- recode(subsetDemo$religion2, "c('NOT SPECIFIED','UNOBTAINABLE')='UNKNOWN'")
+detach(package:car, unload=TRUE)
+
+
+
+
+#Calculate proportions
+  #Spent over an hour trying to make these into one function for all variables and could not figure it out
+#Age
+propAge <- function(data){
+  sort(data$age2)
+  data %>% count(age2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsAge <- function(data){
+  column_to_rownames(as.data.frame(data), var="age2")
+}
+demoCombAge <- propAge(subsetDemo) %>% rowsAge()
+demoCaseAge <- filter(subsetDemo, case==1) %>% propAge() %>% rowsAge()
+demoControlAge <- filter(subsetDemo, case==0) %>% propAge() %>% rowsAge()
+demoTableAge <- cbind(demoCombAge, demoCaseAge, demoControlAge)
+# kable(demoTableAge, "html") %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+#Ethnicity
+propEth <- function(data){
+  sort(data$ethnicity2)
+  data %>% count(ethnicity2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsEth <- function(data){
+  column_to_rownames(as.data.frame(data), var="ethnicity2")
+}
+demoCombEth <- propEth(subsetDemo) %>% rowsEth()
+demoCaseEth <- filter(subsetDemo, case==1) %>% propEth() %>% rowsEth()
+demoControlEth <- filter(subsetDemo, case==0) %>% propEth() %>% rowsEth()
+demoTableEth <- cbind(demoCombEth, demoCaseEth, demoControlEth)
+# kable(demoTableEth, "html") %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+#Language
+propLang <- function(data){
+  sort(data$language2)
+  data %>% count(language2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsLang <- function(data){
+  column_to_rownames(as.data.frame(data), var="language2")
+}
+demoCombLang <- propLang(subsetDemo) %>% rowsLang()
+demoCaseLang <- filter(subsetDemo, case==1) %>% propLang() %>% rowsLang()
+demoControlLang <- filter(subsetDemo, case==0) %>% propLang() %>% rowsLang()
+demoTableLang <- cbind(demoCombLang, demoCaseLang, demoControlLang)
+# kable(demoTableLang, "html") %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+#Insurance
+propInsur <- function(data){
+  sort(data$insurance)
+  data %>% count(insurance, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsInsur <- function(data){
+  column_to_rownames(as.data.frame(data), var="insurance")
+}
+demoCombInsur <- propInsur(subsetDemo) %>% rowsInsur()
+demoCaseInsur <- filter(subsetDemo, case==1) %>% propInsur() %>% rowsInsur()
+demoControlInsur <- filter(subsetDemo, case==0) %>% propInsur() %>% rowsInsur()
+#Cases had 0 self-paying individuals, and I thought it was important to keep this in, so I had to manually add a row
+  selfPay <- data.frame("Self Pay",as.integer(0),0.00000)
+  selfPay <- column_to_rownames(as.data.frame(selfPay), var="X.Self.Pay.")
+  names(selfPay) <- c("n","proportion")
+  demoCaseInsur <- rbind(demoCaseInsur, selfPay)
+demoTableInsur <- cbind(demoCombInsur, demoCaseInsur, demoControlInsur)
+# kable(demoTableInsur, "html") %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+#Religion
+propRel <- function(data){
+  sort(data$religion2)
+  data %>% count(religion2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsRel <- function(data){
+  column_to_rownames(as.data.frame(data), var="religion2")
+}
+demoCombRel <- propRel(subsetDemo) %>% rowsRel()
+demoCaseRel <- filter(subsetDemo, case==1) %>% propRel() %>% rowsRel()
+demoControlRel <- filter(subsetDemo, case==0) %>% propRel() %>% rowsRel()
+demoTableRel <- cbind(demoCombRel, demoCaseRel, demoControlRel)
+# kable(demoTableRel, "html") %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" "=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+#All together now
+demographicTable <- rbind(demoTableAge, demoTableEth, demoTableLang, demoTableRel, demoTableInsur)
+kable(demographicTable, "html") %>%
+  kable_styling("striped", full_width = F) %>%
+  group_rows("Age",1,7) %>%
+  group_rows("Ethnicity",8,13) %>%
+  group_rows("Language",14,18) %>% 
+  group_rows("Religion",19,23) %>%
+  group_rows("Insurance",24,28) %>%
+  add_header_above(c("TABLE 1"=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+```
+   Table 1 shows that our cases and controls are largely similar; however, it may be of interest that 0 cases had 'self-pay' for their insurance. That being said, considering the low proportion of controls who were self-pay, we do not believe this will impact our analyses.  
+   Unfortunately, given that the MIMIC-III dataset is deidentified, we were limited in the number of socio-demographic variables available. However, for many conditions, especially Salmonella, some of the most essential information to include in a case report are socio-demographics, as they may contain whether the case is likely to transmit the disease to other persons (e.g., a childcare worker), or if the exposure source is of a public health concern (e.g., a restaurant).^7^  
+  
+  
+###Token selection
+Below we transform our data from cells which contain multiple phrases and paragraphs, to single cells per word - ie, token. The resulting graph displays the frequency of each term based on whether it has a higher appearance proportion in cases versus controls. Words that are closer to the line have similar frequencies in both categories.
+```{r mutate}
+#Create dataframe with character vectors for subset
+subsetDF <- subsetLimited %>%
+  group_by(subject_id) %>%
+  mutate(linenumber = row_number(),
+         visit = hadm_id) %>%
+  ungroup()
+subsetDF$text <- as.character(subsetDF$text)
+subsetDF$text <- tolower(subsetDF$text)
+
+subsetTokens <- subsetDF %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z]+")) %>%
+  na.omit()
+
+```
+
+###Frequencies
+```{r wordFrequencies}
+#Separate cases and controls
+casesDF <- filter(subsetLimited, case=="1")
+controlsDF <- filter(subsetLimited, case=="0")
+
+#Cases
+casesDF <- casesDF %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+
+casesDF$text <- as.character(casesDF$text)
+casesDF$text <- tolower(casesDF$text)
+
+#Separate each line of text into tokens & remove stop words
+tidyCasesDF <- casesDF %>% 
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z]+")) %>%
+  na.omit()
+
+
+#Controls
+controlsDF <- controlsDF %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+
+controlsDF$text <- as.character(controlsDF$text)
+controlsDF$text <- tolower(controlsDF$text)
+
+#Separate each line of text into tokens & remove stop words
+tidyControlsDF <- controlsDF %>% 
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z]+")) %>%
+  na.omit()
+
+
+#Putting them back together
+frequencyDF <- bind_rows(mutate(tidyCasesDF, category="Cases"),
+                         mutate(tidyControlsDF, category="Controls")) %>%
+  count(category, word) %>%
+  group_by(category) %>%
+  mutate(proportion = n/sum(n)) %>%
+  select(-n) %>%
+  spread(category, proportion) %>%
+  gather(category, proportion, `Controls`)
+
+#Plotting
+#expect a warning about rows with missing values being removed
+ggplot(frequencyDF, aes(x=proportion, y=`Cases`, color=abs(`Cases` - proportion)))+
+  geom_abline(color="gray40", lty=2) +
+  geom_jitter(alpha=0.1, size=2.5, width=0.3, height=0.3) +
+  geom_text(aes(label=word), check_overlap=TRUE, vjust=1.5) +
+  scale_x_log10(labels=percent_format()) +
+  scale_y_log10(labels=percent_format()) +
+  scale_color_gradient(limits=c(0, 0.001), low="darkslategray4", high="gray75") + 
+  facet_wrap(~category, ncol=1) +
+  theme(legend.position="none") +
+  labs(y="Cases", x=NULL) +
+  ggtitle("Plot 1: Frequency of terms in cases versus controls")
+
+```
+  Plot 1 shows that a number of terms are far more associated with either cases or controls. For example, we see the antifungals 'ambisome' and 'micafungin' are both more asociated with our cases, whereas 'fasciotomies' and 'craniectomy' are more associated with controls.  
+  
+  In order to better visualize the most common terms, below we create word clouds of the most common terms for cases, controls, and both cases and controls.
+```{r wordcloud}
+#Word Clouds
+#Cases
+tidyCasesFreq <- tidyCasesDF %>% 
+  count(tidyCasesDF$word) %>%
+  top_n(100)
+names(tidyCasesFreq)[1] <- "word"
+names(tidyCasesFreq)[2] <- "freq"
+tidyCasesFreq <- tidyCasesFreq[order(-tidyCasesFreq$freq),]
+wordcloud2(tidyCasesFreq)
+
+#Controls
+tidyControlsFreq <- tidyControlsDF %>% 
+  count(tidyControlsDF$word) %>%
+  top_n(100)
+names(tidyControlsFreq)[1] <- "word"
+names(tidyControlsFreq)[2] <- "freq"
+tidyControlsFreq <- tidyControlsFreq[order(-tidyControlsFreq$freq),]
+wordcloud2(tidyControlsFreq)
+
+#Combined
+tidyCombinedFreq <- subsetTokens %>%
+  count(subsetTokens$word) %>%
+  top_n(100)
+names(tidyCombinedFreq)[1] <- "word"
+names(tidyCombinedFreq)[2] <- "freq"
+tidyCombinedFreq <- tidyCombinedFreq[order(-tidyCombinedFreq$freq),]
+wordcloud2(tidyCombinedFreq)
+
+```
+It is clear that the cases and controls both contain many similar terms. Thus, below we quantify the similarity.
+```{r quantifySim}
+#Quantify similarity between word frequecy sets
+cor.test(data=frequencyDF[frequencyDF$category=="Controls",],
+         ~ proportion + `Cases`)
+
+```
+Cases and controls are indeed significantly similar.   
+  
+  
+###Lasso Logistic Regression
+Lasso logistic regression was used to determine the ideal feature set to classify cases. 
+```{r glmnet}
+#Lasso Logistic Regression
+glmProjectDF <- subsetDF %>% unnest_tokens(word, text) %>%
+  mutate(word = str_extract(word, "[a-z]+"))# %>%  
+
+#Remove stopwords 
+glmProjectDF <- glmProjectDF %>% anti_join(stop_words) %>% na.omit()
+
+glmProjectCnt <- glmProjectDF %>%
+  count(glmProjectDF$word) %>%
+  filter(n>10) 
+names(glmProjectCnt)[1] <- "word"
+glmProjectData <- join(glmProjectDF, glmProjectCnt, by="word", type="right", match="all")
+glmProjectDF <- subset(glmProjectData, select=-c(n))
+
+#Find most common words (td-idf)
+glmProjectCount <- glmProjectDF %>% count(word, subject_id, case, sort=TRUE)
+glmProjectTotal <- glmProjectCount %>% group_by(subject_id) %>% summarize(Abs_total = sum(n)) 
+glmProjectCT <- left_join(glmProjectCount, glmProjectTotal)
+
+projectSkinnyFeatures <- glmProjectCT %>% bind_tf_idf(word, subject_id, Abs_total) 
+head(projectSkinnyFeatures)
+
+#Converting to matrix form 
+projectMatrix <- projectSkinnyFeatures %>% cast_sparse(subject_id, word, tf_idf)
+
+projectOrd <- match(rownames(projectMatrix), subsetDF$subject_id)
+projectOutcome <- ifelse(subsetDF$case[projectOrd] == 1, 1, 0) 
+
+
+#Build sparse logistic model - lasso model
+set.seed(23)
+projectMatrixScale <- scale(projectMatrix)
+projectMatrixScale[is.nan(projectMatrixScale)] = 0
+
+#glmnet Plot
+projectFit <- glmnet(projectMatrixScale, projectOutcome, family="binomial")
+plot(projectFit)
+print(projectFit)
+#coef(projectFit, s=0.1)
+projectCoefs <- coef(projectFit, s=0.1)
+
+projectCoefInds <- which(projectCoefs != 0)[-1]
+coefs <- data_frame(word=colnames(projectMatrixScale)[projectCoefInds -1], Coef=projectCoefs[projectCoefInds])
+
+coefs %>% arrange(Coef) %>% head()
+
+
+#Cross-validation Plot
+projectCVFit <- cv.glmnet(projectMatrixScale, projectOutcome, family="binomial", type.measure="class")
+plot(projectCVFit)#, main="Binomial Lasso Logistic Regression for Cases vs Controls")
+
+
+```
+  We found the lowest misclassification error (~0.20) to be associated with a model containing four features/coefficients.  
+  
+  Below we examine which terms were selected by the above model. 
+```{r glmnetTerms}
+projectCVCoefs <- coef(projectCVFit, s="lambda.min")
+
+projectCVCoefInds <- which(projectCVCoefs != 0)[-1]
+CVcoefs <- data_frame(word=colnames(projectMatrixScale)[projectCVCoefInds -1], CVCoef=projectCVCoefs[projectCVCoefInds])
+
+CVcoefs %>% arrange(CVCoef) %>% head()
+
+```
+  According to our calculations, the presence/absence of the terms "status," "examination," and "sinus,"
+  
+##Discussion
+Given the similarity between cases and controls, in future work, it may be essential to classify information in three ways: 1) terms which are significantly associated with cases, 2) terms which are essential for case investigation, regardless of association, and 3) terms which are not relevant to case investigation. Along similar lines, it may also be helpful to create a set of stop words which are relevant in medicine, such as measurement units.  
+   However, since our lasso logistic regression did yeild a non-zero feature set, we do believe it would be possible to continue our work towards improving eCI.  
+
+##Limitations
+The MIMIC-III dataset contains deidentified data from only critical care patients. We were therefore limited in the diseases we could select from, as well as the data available to analyze. Also, given the limited time, we were not able to spell-check our data. Spell-checking data has mixed implications, as we are potentially gathering incorrect term frequencies; however, data containing misspellings more accurately represents a true electronic health record. Additionally, we were not able to use a high powered computing source.   
+  
+##Next Steps
+For our next step, we would like to extract the full sentences which contain the features most associated with cases, in order to give better context to the investigator. We will also work to create a training set comprised of epidemiologically-relevant phrases in order to identify other elements in case investigation, such as symptom duration and exposure history. 
+
+
+
+##References
+1. Lee LM, Teutsch SM, Thacker SB, St. Louis ME, eds. Principles & Practice of Public Health Surveillance. 3rd ed. New York, New York, USA: Oxford University Press; 2010.
+2. 	MacKenzie WR, Davidson AJ, Wiesenthal A, et al. The promise of electronic case reporting. Public Health Rep. 2016;131(6):742-746. doi:10.1177/0033354916670871
+3. 	About | Digital Bridge. http://www.digitalbridge.us/about/. Accessed January 31, 2018.
+4. 	Advancing Electronic Case Reporting of Sexually Transmitted Infections.; 2016. https://www.phii.org/sites/www.phii.org/files/resource/files/ECRofSTIGuidance_v2_Draft1_20160719.pdf. Accessed January 31, 2018.
+5. Johnson AE, Pollard TJ, Shen L, et al. MIMIC-III, a freely accessible critical care database Background &amp; Summary. Nature. 2016. doi:10.1038/sdata.2016.35
+6. Goldberger AL, Amaral LAN, Glass L, et al. PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals. Circulation. 2000;101(23):e215-e220. http://circ.ahajournals.org/content/101/23/e215.full.
+7. http://www.mass.gov/eohhs/docs/dph/disease-reporting/guide/salmonellosis.pdf
+
+
+*. http://www.mass.gov/eohhs/docs/dph/cdc/reporting/rprtbldiseases-hcp.pdf
+
+
