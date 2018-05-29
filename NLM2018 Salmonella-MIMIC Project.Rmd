@@ -1,0 +1,884 @@
+---
+title: "Salmonella Case Investigation with NLP"
+author: "Maggie Dorr"
+date: "Updated May 29, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(digits=5)
+
+# Load packages
+library(knitr)
+library(ggplot2)
+library(data.table)
+library(plyr)
+library(dplyr)
+library(tidytext)
+library(stringr)
+library(tidyr)
+library(scales)
+library(glmnet)
+library(wordcloud2)
+library(tm)
+library(kableExtra)
+library(tibble)
+
+# Set WD
+setwd("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish") 
+
+
+###Salmonella###
+# Load in Reportable Condition Trigger Code (RCTC) tables
+# labObsTestName <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Lab Obs Test Name 20171013.csv", header=TRUE)
+# labObsTestNameSalmonella <- filter(labObsTestName, SalmonellaYN==1)
+# names(labObsTestNameSalmonella)[1] <- "Code"
+# organismSubstance <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Organism Substance 20171013.csv", header=TRUE)
+# organismSubstanceSalmonella <- filter(organismSubstance, SalmonellaYN==1)
+# names(organismSubstanceSalmonella)[1] <- "Code"
+# organismSubstanceSalmonella$Code <- as.factor(organismSubstanceSalmonella$Code)
+# diagProblem <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/RCTC - Diagnosis Problem 20171013.csv", header=TRUE)
+# diagProblemSalmonella <- filter(diagProblem, SalmonellaYN==1)
+# names(diagProblemSalmonella)[1] <- "Code"
+# diagProblemSalmonellaNotICD <- filter(diagProblemSalmonella, CodeSystem!="ICD10CM")
+# # Convert ICD-10 codes to ICD-9 in diagProblemSalmonella
+# salmonellaICD10 <- filter(diagProblemSalmonella, CodeSystem=="ICD10CM")
+# salmonellaICD10$Code <- sub("[.]", "", salmonellaICD10$Code)
+# convertICD <- read.csv("C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/icd10cmtoicd9gem.csv", header=TRUE) #read in file from the National Bureau of Economic Research
+# salmonellaICD10$icd10cm <- as.factor(salmonellaICD10$Code)
+# salmonellaICD10 <- merge(salmonellaICD10, convertICD, by="icd10cm")
+# salmonellaICD10$Code <- salmonellaICD10$icd9cm
+# salmonellaICD10 <- salmonellaICD10 %>% select(Code, Descriptor, CodeSystem, Version, Status, RemapInfo, ChlamYN, PertussisYN, SalmonellaYN)
+# salmonellaICD10$CodeSystem <- "ICD9CM"
+# 
+# # Merge RCTC tables
+# salmonella <- rbind(diagProblemSalmonellaNotICD, salmonellaICD10, labObsTestNameSalmonella, organismSubstanceSalmonella)
+# salmonella <- salmonella %>% select(Code, Descriptor, CodeSystem)
+# 
+# # Export salmonella RCTC table to csv
+# write.csv(salmonella, file="C:/Users/Maggie/OneDrive/UW - BHI/Research Ish/PHIN VADS/salmonellaRCTC.csv", sep=",", row.names=F, col.names=T)
+###END###
+
+# The above data was then used in python to build the below dataset:
+#write.csv(projectSubset, file="C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectDataSubset.csv", sep=",", row.names=F, col.names = T)
+
+#Read in project subset from CSV
+# projectSubset <- fread("C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectDataSubset990.csv", header=TRUE, sep=',')[,-1] #Larger subset (n=990)
+# projectSubset <- fread("C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectDataSubset.csv", header=TRUE, sep=',')[,-1] #Smaller subset (n=512)
+
+#Read in project data containing a train/test variable
+projectData <- fread("C:/Users/Maggie/OneDrive/UW - BHI/2018 Winter/BIOS 544/data/projectTestTrain.csv")
+projectData$subject_id <- as.character(projectData$subject_id)
+projectData <- projectData[, -c(1,2,20)]
+dataLimited <- projectData[,c(4,10,16,17)]
+dataLimited <- unique(dataLimited[ ,1:4]) 
+
+
+# trainingSubset <- filter(projectData, train==TRUE)
+# trainingLimited <- trainingSubset %>% select(case, subject_id, hadm_id, text)
+# trainingLimited <- unique(trainingLimited[ ,1:4]) #76309 or 106740
+# trainingLimited$subject_id <- as.character(trainingLimited$subject_id)
+
+set.seed(23)
+dataTT <- dataLimited[!duplicated(dataLimited$subject_id)]
+dataTT <- dataTT %>% select(subject_id, case)
+#Method to get a more even split
+dataCase <- filter(dataTT, case==1)
+dataControl <- filter(dataTT, case==0)
+sampleCase <- sample(1:nrow(dataCase), nrow(dataCase)/2)
+sampleControl <- sample(1:nrow(dataControl), nrow(dataControl)/2)
+trainingCase <- dataCase[sampleCase,]
+trainingControl <- dataControl[-sampleControl,]
+testCase <- dataCase[-sampleCase,]
+testControl <- dataControl[sampleControl,]
+trainingSubset <- rbind(trainingCase, trainingControl)
+testSubset <- rbind(testCase, testControl)
+trainingSubset <- trainingSubset %>% select(subject_id)
+testSubset <- testSubset %>% select(subject_id)
+
+trainingSubset <- merge(trainingSubset, projectData, by="subject_id", all.x=TRUE)
+testSubset <- merge(testSubset, projectData, by="subject_id", all.x=TRUE)
+# trainingSubset$train <- 1
+# testSubset$train <- 0
+
+
+#Verifying that the subsets worked well:
+#For 1:2 split
+# > sum(trainingSubset[!duplicated(trainingSubset$subject_id)]$case==1)
+# [1] 419
+# > sum(trainingSubset[!duplicated(trainingSubset$subject_id)]$case==0)
+# [1] 388
+# > sum(testSubset[!duplicated(testSubset$subject_id)]$case==1)
+# [1] 792
+# > sum(testSubset[!duplicated(testSubset$subject_id)]$case==0)
+# [1] 823
+#The above numbers had bad methods, but keeping for test coding
+
+#Restrict datasets
+trainingLimited <- trainingSubset %>% select(case, subject_id, hadm_id, text)
+trainingLimited <- unique(trainingLimited[ ,1:4]) 
+trainingLimited$subject_id <- as.character(trainingLimited$subject_id)
+
+testLimited <- testSubset %>% select(case, subject_id, hadm_id, text)
+testLimited <- unique(testLimited[ ,1:4]) 
+testLimited$subject_id <- as.character(testLimited$subject_id)
+
+
+
+
+#Stop words
+data(stop_words) #apparently everything breaks if I don't keep this
+
+#Write dataset for python 
+# write.csv(trainingLimited, file="C:/Users/Maggie/OneDrive/Uw - BHI/Research Ish/MIMIC/salmonellaData05252018.csv", sep=",", row.names=F, col.names=T)
+```
+## An Explanation!
+Greetings!  
+
+   *Everything written in free-text below this paragraph was for a write-up I did for class. I haven't touched it since, so some [written] elements may not correspond to what is coded; however, for the most part, I have commented out my old code instead of deleting it, for those folks that hate themselves and want minute details. With that out of the way, here's what I've got so far:*  
+   
+   This is semi-formal write up for the first step of project I started working on in January 2018. The overall idea is to take advantage of the free-text 'Notes' section in an electronic health record (EHR) and build [at least part of] a case investigation document. The project as a whole is still in early development stages, but here's hoping it keeps going!  
+   
+   Also, although I originally intended this to be more blog post-esque, my inner nerd took over and turned it into more of a manuscript. I was going to leave in my code, in case you, dear reader, were curious about my methods, but scrapped that in the end as well. Overall, it's a pretty dry read. My apologies.   
+
+## Introduction
+In accordance with state and federal regulations, healthcare providers and laboratories are required to report positive incidences of notifiable conditions. Each state has a specific list of communicable and other infectious diseases that they require practitioners to report. Traditionally, the case reporting process has been conducted via paper reports and internet-based entry systems, which are often slow, incomplete, or not reported at all due to the significant effort required of clinicians.^1^ Fortunately, recent developments have made electronic case reporting (eCR) a more viable option for healthcare facilities. eCR is the electronic transmission of a case report directly from a patient's electronic health record (EHR) to a public health jurisdiction or healthcare intermediary. The aim of eCR is to reduce clinician burden, while also increasing report timeliness and completion.^2-4^ In turn, these improvements allow for increased detection of outbreaks, earlier intervention, and decreased disease transmission.^3^ At present, there is a large eCR development project, [Digital Bridge](www.digitalbridge.us), which is piloting eCR at seven sites across the nation.^3^ On a broad scale, the technical infrastructure uses standardized and publicly available trigger codes to determine whether a case report should be initialized, and then an HL7 standard to transmit the data. After a case is reported, case investigation is used to determine disease etiology, case management, potential sources of infection, management of exposure(s), and environmental measures. At present, the HL7 Initial Electronic Case Report only holds a limited set of information; much less than what is required for a case investigation.  
+
+Described below is an initial step in a long-term project which aims to help improve eCR and develop electronic case investigation (eCI). We used the MIMIC-III (Medical Information Mart for Intensive Care - III) dataset, which contains information from 53,423 unique adult (aged 16 years and above) critical care admissions to the Beth Israel Deaconess Medical Center in Boston, Massachusetts between 2001 and 2012.^5-6^ This dataset was selected based on its inclusion of both structured and unstructured data, including free-text narrative, as well as its inclusion of an abundance of data points. We started by using the same trigger codes used by Digital Bridge, available from the Public Health Information Network Vocabulary Access and Distribution System (PHIN VADS) to identify our cases. Currently, there are only five conditions with verified trigger codes, of which we selected Salmonella (i.e., salmonellosis), as it is most prevalent in critical care patients compared to the other four conditions. 
+
+After salmonella-positive cases were identified, an equal number of controls were selected randomly from the remaining admissions. This left us with over 2,400 individuals, which unfortunately was too large of a dataset to conduct the analyses we intended. Thus, an equal number of cases and controls were selected randomly from the above dataset. Our total sample for these analyses was 512, 256 cases and 256 controls. Below you'll find our table one. 
+
+
+##Analyses
+###Socio-demographics
+Below we have calculated the socio-demographic characteristics of our sample.
+```{r table1, echo=FALSE}
+#Demographics
+# projectDemo <- projectData[,c(3,4,9,12:16)]
+projectDemo <- trainingSubset[,c(1,4,5,10,13,14,16)]
+projectDemo <- unique(projectDemo[c("subject_id","age","case","ethnicity","insurance","language","religion")])
+projectDemo <- projectDemo[order(projectDemo$subject_id, projectDemo$language, projectDemo$ethnicity, projectDemo$religion, projectDemo$insurance, projectDemo$age, projectDemo$case, decreasing=TRUE),]
+projectDemo <- projectDemo[!duplicated(projectDemo[,1]),]
+projectDemo$language[projectDemo$language==""] <- "UNKNOWN"
+projectDemo$ethnicity[projectDemo$ethnicity==""] <- "UNKNOWN"
+projectDemo$religion[projectDemo$religion==""] <- "UNKNOWN"
+projectDemo$insurance[projectDemo$insurance==""] <- "UNKNOWN"
+
+#Compress demographic variables
+
+#Age
+projectDemo$age2 <- as.character("0")
+projectDemo$age2[projectDemo$age>=16 & projectDemo$age<25] <- "16-24"
+projectDemo$age2[projectDemo$age>=25 & projectDemo$age<35] <- "25-34"
+projectDemo$age2[projectDemo$age>=35 & projectDemo$age<45] <- "35-44"
+projectDemo$age2[projectDemo$age>=45 & projectDemo$age<55] <- "45-54"
+projectDemo$age2[projectDemo$age>=55 & projectDemo$age<65] <- "55-64"
+projectDemo$age2[projectDemo$age>=65 & projectDemo$age<75] <- "65-74"
+projectDemo$age2[projectDemo$age>=75] <- "75+"
+projectDemo$age2[projectDemo$age2=="0"] <- "UNKNOWN"
+projectDemo$age2 <- as.factor(projectDemo$age2)
+library(car)
+#Ethnicity
+projectDemo$ethnicity2 <- as.character(projectDemo$ethnicity)
+projectDemo$ethnicity2 <- recode(projectDemo$ethnicity2, "c('BLACK/HAITIAN', 'BLACK/CAPE VERDEAN', 'BLACK/AFRICAN AMERICAN', 'BLACK/AFRICAN')='BLACK'")
+projectDemo$ethnicity2 <- recode(projectDemo$ethnicity2, "c('PATIENT DECLINED TO ANSWER', 'UNABLE TO OBTAIN')='UNKNOWN/NOT SPECIFIED'")
+projectDemo$ethnicity2 <- recode(projectDemo$ethnicity2, "c('HISPANIC/LATINO - COLOMBIAN', 'HISPANIC/LATINO - PUERTO RICAN', 'HISPANIC/LATINO - CUBAN', 'HISPANIC/LATINO - GUATEMALAN', 'HISPANIC/LATINO - SALVADORAN', 'HISPANIC/LATINO - DOMINICAN', 'PORTUGUESE', 'SOUTH AMERICAN')='HISPANIC OR LATINO'")
+projectDemo$ethnicity2 <- recode(projectDemo$ethnicity2, "c('WHITE - BRAZILIAN', 'WHITE - EASTERN EUROPEAN', 'WHITE - OTHER EUROPEAN', 'WHITE - RUSSIAN')='WHITE'")
+projectDemo$ethnicity2 <- recode(projectDemo$ethnicity2, "c('ASIAN - KOREAN', 'ASIAN - ASIAN INDIAN', 'ASIAN - CAMBODIAN', 'ASIAN - CHINESE', 'ASIAN - VIETNAMESE', 'ASIAN - OTHER')='ASIAN'")
+projectDemo$ethnicity2 <- recode(projectDemo$ethnicity2, "c('MULTIPLE ETHNICITIES/OTHER', 'MIDDLE EASTERN', 'AMERICAN INDIAN/ALASKA NATIVE', 'MULTI RACE ETHNICITY', 'NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER', 'CARIBBEAN ISLAND', 'OTHER')='OTHER OR MULTIPLE ETHNICITIES'")
+  #Note: Getting a bunch of 'NAs introduced by coercion' errors, but everything seems to run alright, so I've kept it as-is.
+#Language
+projectDemo$language2 <- as.character(projectDemo$language)
+projectDemo$language2 <- recode(projectDemo$language2, "c('ALBA','FREN','ITAL','PORT','RUSS','GREE','*YID','POLI','*DUT')='OTHER EUROPEAN'")
+projectDemo$language2 <- recode(projectDemo$language2, "c('ARAB','CAPE','PTUN','PERS','HAIT','CANT','MAND','THAI','VIET','CAMB','KORE','URDU','HIND','*BEN','*GUJ','*TOI')='OTHER'")
+projectDemo$language2 <- sub("SPAN", "SPANISH", projectDemo$language2)
+projectDemo$language2 <- sub("ENGL", "ENGLISH", projectDemo$language2)
+#Religion
+projectDemo$religion2 <- as.character(projectDemo$religion)
+projectDemo$religion2 <- sub("JEHOVAH'S WITNESS","JEHOVAHS WITNESS",projectDemo$religion2)
+projectDemo$religion2 <- recode(projectDemo$religion2, "c('7TH DAY ADVENTIST','BAPTIST','BUDDHIST','CHRISTIAN SCIENTIST','EPISCOPALIAN','GREEK ORTHODOX','HINDU','MUSLIM','ROMANIAN EAST. ORTH','UNITARIAN-UNIVERSALIST','JEHOVAHS WITNESS')='OTHER'")
+projectDemo$religion2[projectDemo$religion2==""] <- "UNKNOWN"
+projectDemo$religion2 <- sub("HEBREW","JEWISH",projectDemo$religion2)
+projectDemo$religion2 <- recode(projectDemo$religion2, "c('NOT SPECIFIED','UNOBTAINABLE')='UNKNOWN'")
+
+detach(package:car, unload=TRUE)
+
+
+#Calculate proportions
+  #Spent over an hour trying to make these into one function for all variables and could not figure it out
+#Age
+propAge <- function(data){
+  sort(data$age2)
+  data %>% count(age2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsAge <- function(data){
+  column_to_rownames(as.data.frame(data), var="age2")
+}
+demoCombAge <- propAge(projectDemo) %>% rowsAge()
+demoCaseAge <- filter(projectDemo, case==1) %>% propAge() %>% rowsAge()
+demoControlAge <- filter(projectDemo, case==0) %>% propAge() %>% rowsAge()
+demoTableAge <- cbind(demoCombAge, demoCaseAge, demoControlAge)
+
+#Ethnicity
+propEth <- function(data){
+  sort(data$ethnicity2)
+  data %>% count(ethnicity2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsEth <- function(data){
+  column_to_rownames(as.data.frame(data), var="ethnicity2")
+}
+demoCombEth <- propEth(projectDemo) %>% rowsEth()
+demoCaseEth <- filter(projectDemo, case==1) %>% propEth() %>% rowsEth()
+demoControlEth <- filter(projectDemo, case==0) %>% propEth() %>% rowsEth()
+demoTableEth <- cbind(demoCombEth, demoCaseEth, demoControlEth)
+
+#Language
+propLang <- function(data){
+  sort(data$language2)
+  data %>% count(language2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsLang <- function(data){
+  column_to_rownames(as.data.frame(data), var="language2")
+}
+demoCombLang <- propLang(projectDemo) %>% rowsLang()
+demoCaseLang <- filter(projectDemo, case==1) %>% propLang() %>% rowsLang()
+demoControlLang <- filter(projectDemo, case==0) %>% propLang() %>% rowsLang()
+demoTableLang <- cbind(demoCombLang, demoCaseLang, demoControlLang)
+
+#Insurance
+projectDemo$insurance <- as.factor(projectDemo$insurance)
+propInsur <- function(data){
+  sort(data$insurance)
+  data %>% count(insurance, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsInsur <- function(data){
+  column_to_rownames(as.data.frame(data), var="insurance")
+}
+demoCombInsur <- propInsur(projectDemo) %>% rowsInsur()
+demoCaseInsur <- filter(projectDemo, case==1) %>% propInsur() %>% rowsInsur()
+demoControlInsur <- filter(projectDemo, case==0) %>% propInsur() %>% rowsInsur()
+#NOT TRUE FOR LARGER SUBSET - Cases had 0 self-paying individuals, and I thought it was important to keep this in, so I had to manually add a row
+  # selfPay <- data.frame("Self Pay",as.integer(0),0.00000)
+  # selfPay <- column_to_rownames(as.data.frame(selfPay), var="X.Self.Pay.")
+  # names(selfPay) <- c("n","proportion")
+  # demoCaseInsur <- rbind(demoCaseInsur, selfPay)
+demoTableInsur <- cbind(demoCombInsur, demoCaseInsur, demoControlInsur)
+
+projectDemo$religion2 <- as.factor(projectDemo$religion2)
+#Religion
+propRel <- function(data){
+  sort(data$religion2)
+  data %>% count(religion2, sort=FALSE) %>% mutate(proportion = n/sum(n))
+}
+rowsRel <- function(data){
+  column_to_rownames(as.data.frame(data), var="religion2")
+}
+demoCombRel <- propRel(projectDemo) %>% rowsRel()
+demoCaseRel <- filter(projectDemo, case==1) %>% propRel() %>% rowsRel()
+demoControlRel <- filter(projectDemo, case==0) %>% propRel() %>% rowsRel()
+demoTableRel <- cbind(demoCombRel, demoCaseRel, demoControlRel)
+
+#All together now - plotting a single demographic table
+demographicTable <- rbind(demoTableAge, demoTableEth, demoTableLang, demoTableRel, demoTableInsur)
+kable(demographicTable, "html") %>%
+  kable_styling("striped", full_width = F) %>%
+  group_rows("Age",1,7) %>%
+  group_rows("Ethnicity",8,13) %>%
+  group_rows("Language",14,18) %>% 
+  group_rows("Religion",19,23) %>%
+  group_rows("Insurance",24,28) %>%
+  add_header_above(c("TABLE 1"=1, "Total"=2, "Cases"=2, "Controls"=2))
+
+```
+   Table 1 shows that our cases and controls are largely similar; however, it may be of interest that 0 cases had 'self-pay' for their insurance. That being said, considering the low proportion of controls who were self-pay, we do not believe this will impact our analyses.  
+   
+   Unfortunately, given that the MIMIC-III dataset is deidentified, we were limited in the number of socio-demographic variables available. However, for many conditions, especially Salmonella, some of the most essential information to include in a case report are socio-demographics, as they may contain whether the case is likely to transmit the disease to other persons (e.g., a childcare worker), or if the exposure source is of a public health concern (e.g., a restaurant).^7^   
+  
+  
+###Token selection & term frequency calculation
+We transformed our data from cells which contain multiple phrases and paragraphs, to single cells per word - ie, token. The resulting graph displays the frequency of each term based on whether it has a higher appearance proportion in cases versus controls. Words that are closer to the line have similar frequencies in both categories.
+```{r mutate, echo=FALSE}
+#Create dataframe with character vectors for subset
+subsetDF <- projectLimited %>%
+  group_by(subject_id) %>%
+  mutate(linenumber = row_number(),
+         visit = hadm_id) %>%
+  ungroup()
+subsetDF$text <- as.character(subsetDF$text)
+subsetDF$text <- tolower(subsetDF$text)
+
+#Repeat for training dataset
+trainingDF <- trainingLimited %>%
+  group_by(subject_id) %>%
+  mutate(linenumber = row_number(),
+         visit = hadm_id) %>%
+  ungroup()
+trainingDF$text <- as.character(trainingDF$text)
+trainingDF$text <- tolower(trainingDF$text)
+
+#Repeat for test dataset
+testDF <- testLimited %>%
+  group_by(subject_id) %>%
+  mutate(linenumber = row_number(),
+         visit = hadm_id) %>%
+  ungroup()
+testDF$text <- as.character(testDF$text)
+testDF$text <- tolower(testDF$text)
+
+
+#Tokenize for something...
+subsetTokens <- subsetDF %>%
+  unnest_tokens(word, text) %>%
+  #anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z]+")) %>%
+  na.omit()
+
+subsetTokensSentences <- subsetDF %>%
+  unnest_tokens(sentence, text, token="sentences")
+```
+
+
+```{r wordFrequencies, echo=FALSE}
+#Separate cases and controls
+casesDF <- filter(trainingLimited, case=="1")
+controlsDF <- filter(trainingLimited, case=="0")
+
+#Cases
+casesDF <- casesDF %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+
+casesDF$text <- as.character(casesDF$text)
+casesDF$text <- tolower(casesDF$text)
+
+#Separate each line of text into tokens & remove stop words
+tidyCasesDF <- casesDF %>% 
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z]+")) %>%
+  na.omit()
+
+
+#Controls
+controlsDF <- controlsDF %>% 
+  group_by(subject_id) %>% 
+  mutate(linenumber = row_number(),
+         visit= hadm_id) %>%
+  ungroup()
+
+controlsDF$text <- as.character(controlsDF$text)
+controlsDF$text <- tolower(controlsDF$text)
+
+#Separate each line of text into tokens & remove stop words
+tidyControlsDF <- controlsDF %>% 
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_extract(word, "[a-z]+")) %>%
+  na.omit()
+
+
+#Putting them back together
+frequencyDF <- bind_rows(mutate(tidyCasesDF, category="Cases"),
+                         mutate(tidyControlsDF, category="Controls")) %>%
+  count(category, word) %>%
+  group_by(category) %>%
+  mutate(proportion = n/sum(n)) %>%
+  select(-n) %>%
+  spread(category, proportion) %>%
+  gather(category, proportion, `Controls`)
+
+#Plotting
+#expect a warning about rows with missing values being removed
+ggplot(frequencyDF, aes(x=proportion, y=`Cases`, color=abs(`Cases` - proportion)))+
+  geom_abline(color="gray40", lty=2) +
+  geom_jitter(alpha=0.1, size=2.5, width=0.3, height=0.3) +
+  geom_text(aes(label=word), check_overlap=TRUE, vjust=1.5) +
+  scale_x_log10(labels=percent_format()) +
+  scale_y_log10(labels=percent_format()) +
+  scale_color_gradient(limits=c(0, 0.001), low="darkslategray4", high="gray75") + 
+  facet_wrap(~category, ncol=1) +
+  theme(legend.position="none") +
+  labs(y="Cases", x=NULL) +
+  ggtitle("Plot 1: Frequency of terms in cases versus controls")
+
+```
+
+  Plot 1 shows that a number of terms are far more associated with either cases or controls. For example, we see the antifungals 'ambisome' and 'micafungin' are both more asociated with our cases, whereas 'fasciotomies' and 'craniectomy' are more associated with controls.  
+  
+  In order to better visualize the most common terms, below we create word clouds of the most common terms for cases, controls, and both cases and controls, respectively.
+```{r wordcloud, echo=FALSE}
+#Word Clouds
+library(htmlwidgets)
+library(webshot)
+webshot::install_phantomjs()
+#Cases
+tidyCasesFreq <- tidyCasesDF %>% 
+  count(tidyCasesDF$word) %>%
+  top_n(100)
+names(tidyCasesFreq)[1] <- "word"
+names(tidyCasesFreq)[2] <- "freq"
+tidyCasesFreq <- tidyCasesFreq[order(-tidyCasesFreq$freq),]
+cloudCases <- wordcloud2(tidyCasesFreq)
+saveWidget(cloudCases, "cases.html", selfcontained = F)
+webshot::webshot("cases.html","cases.png",vwidth=700,vheight=500,delay=10)
+
+#Controls
+tidyControlsFreq <- tidyControlsDF %>% 
+  count(tidyControlsDF$word) %>%
+  top_n(100)
+names(tidyControlsFreq)[1] <- "word"
+names(tidyControlsFreq)[2] <- "freq"
+tidyControlsFreq <- tidyControlsFreq[order(-tidyControlsFreq$freq),]
+cloudControls <- wordcloud2(tidyControlsFreq)
+saveWidget(cloudControls, "controls.html", selfcontained = F)
+webshot::webshot("controls.html","controls.png",vwidth=700,vheight=500,delay=10)
+
+#Combined
+# tidyCombinedFreq <- subsetTokens %>%
+#   count(subsetTokens$word) %>%
+#   top_n(100)
+# names(tidyCombinedFreq)[1] <- "word"
+# names(tidyCombinedFreq)[2] <- "freq"
+# tidyCombinedFreq <- tidyCombinedFreq[order(-tidyCombinedFreq$freq),]
+# cloudCombined <- wordcloud2(tidyCombinedFreq)
+# saveWidget(cloudCombined, "3.html", selfcontained = F)
+# webshot::webshot("3.html","3.png",vwidth=700,vheight=500,delay=10)
+
+```
+
+Based on our first plot and the word clouds, it is clear that the cases and controls both contain many similar terms. Thus, we wanted to quantify the similarity, as displayed below.   
+```{r quantifySim, echo=FALSE}
+#Quantify similarity between word frequecy sets
+cor.test(data=frequencyDF[frequencyDF$category=="Controls",],
+         ~ proportion + `Cases`)
+
+```
+Cases and controls are indeed significantly similar (correlation = 0.987, p-value < 2e-16); therefore, we do not anticipate having an abundance of features which differentiate between case status.  
+  
+  
+###Lasso Logistic Regression
+Lasso logistic regression was used to determine the ideal feature set to classify cases. Below we plot the coefficients for our binomial regression, plot against the deviance explained, display the intercept, and then display the coefficients' precise values. Our seed was set to 23, the primary author's favorite number. 
+```{r glmnet, echo=FALSE}
+#Lasso Logistic Regression
+###################################################################
+#Setup for Training Set
+glmTrainingDF <- trainingDF %>% unnest_tokens(word, text) %>%
+  mutate(word = str_extract(word, "[a-z]+"))# %>%  
+
+#Remove stopwords and missing
+glmTrainingDF <- glmTrainingDF %>% 
+  anti_join(stop_words) %>% na.omit()
+  
+
+glmTrainingCnt <- glmTrainingDF %>%
+  count(glmTrainingDF$word) %>%
+  filter(n>10) #If 5 doesn't run, restart R
+names(glmTrainingCnt)[1] <- "word"
+glmTrainingData <- join(glmTrainingDF, glmTrainingCnt, by="word", type="right", match="all")
+glmTrainingDF <- subset(glmTrainingData, select=-c(n))
+
+#Find most common words (td-idf)
+glmTrainingCount <- glmTrainingDF %>% count(word, subject_id, case, sort=TRUE)
+glmTrainingTotal <- glmTrainingCount %>% group_by(subject_id) %>% summarize(Abs_total = sum(n)) 
+glmTrainingCT <- left_join(glmTrainingCount, glmTrainingTotal)
+
+trainingSkinnyFeatures <- glmTrainingCT %>% bind_tf_idf(word, subject_id, Abs_total) 
+head(trainingSkinnyFeatures)
+
+#Converting to matrix form 
+trainingMatrix <- trainingSkinnyFeatures %>% cast_sparse(subject_id, word, tf_idf)
+
+trainingOrd <- match(rownames(trainingMatrix), trainingDF$subject_id)
+trainingOutcome <- ifelse(trainingDF$case[trainingOrd] == 1, 1, 0) 
+
+#Build sparse logistic model - lasso model
+trainingMatrixScale <- scale(trainingMatrix)
+trainingMatrixScale[is.nan(trainingMatrixScale)] = 0
+
+
+# ################################################################
+# #TEST SET DATA
+#   #Given the nature of text data, the two matrices had and uneven number of predictors, 
+#   #and it felt ridiculous to cut training and test to be the same size. Perhaps one day
+    #I will reattempt this in order to get a test error.
+
+# glmTestDF <- testDF %>% unnest_tokens(word, text) %>%
+#   mutate(word = str_extract(word, "[a-z]+"))
+# 
+# #Remove stopwords and missing
+# glmTestDF <- glmTestDF %>% 
+#   anti_join(stop_words) %>% na.omit()
+#   
+# 
+# glmTestCnt <- glmTestDF %>%
+#   count(glmTestDF$word) %>%
+#   filter(n>10) #If 5 doesn't run, restart R
+# names(glmTestCnt)[1] <- "word"
+# glmTestData <- join(glmTestDF, glmTestCnt, by="word", type="right", match="all")
+# glmTestDF <- subset(glmTestData, select=-c(n))
+# 
+# #Find most common words (td-idf)
+# glmTestCount <- glmTestDF %>% count(word, subject_id, case, sort=TRUE)
+# glmTestTotal <- glmTestCount %>% group_by(subject_id) %>% summarize(Abs_total = sum(n)) 
+# glmTestCT <- left_join(glmTestCount, glmTestTotal)
+# 
+# testSkinnyFeatures <- glmTestCT %>% bind_tf_idf(word, subject_id, Abs_total) # How do I present this? Do I present this? Does it matter?
+# 
+# #Converting to matrix form 
+# testMatrix <- testSkinnyFeatures %>% cast_sparse(subject_id, word, tf_idf)
+# 
+# testOrd <- match(rownames(testMatrix), testDF$subject_id)
+# testOutcome <- ifelse(testDF$case[testOrd] == 1, 1, 0) 
+# 
+# #Build sparse logistic model - lasso model
+# testMatrixScale <- scale(testMatrix)
+# testMatrixScale[is.nan(testMatrixScale)] = 0
+
+
+#####################################################
+set.seed(23)
+#cross-validation to determine lambda
+trainingFitCV <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1)
+trainingFitCV$lambda.min #0.034
+min(trainingFitCV$cvm)
+trainingFitCV$nzero[[which.min(trainingFitCV$cvm)]]
+plot.cv.glmnet(trainingFitCV) 
+
+#glmnet function
+trainingFit <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", alpha=1, lambda=trainingFitCV$lambda.min) #type.measure="class" gives misclassification error
+trainingFit$dev.ratio
+deviance.glmnet(trainingFit) #(1-dev.ratio)*nulldev
+trainingFit$a0
+trainingFit$df
+
+trainingPredict <- predict(trainingFit, type="coef") #pointless
+
+# plot(trainingFit, xvar="dev", label=TRUE, type.coef="coef") #doesn't plot because it's binomial
+# lines(trainingFit, lwd=1, col="gray75", cex=2, pch=19)
+
+
+
+#Predict with test
+#testPredict <- predict(trainingFit, newx=testMatrixScale, lambda=trainingFitCV$lambda.min, type="response")
+#Despite all the time and effort, this can't be done because the test and training data are different sizes
+
+#Coefficients
+trainingCoefs <- coef(trainingFit, s="lambda.min")
+#Intercept
+trainingCoefs[1]#-0.034 --> -0.009? What? Since when?
+#Coefficients that aren't null
+trainingCoefInds <- which(trainingCoefs != 0)[-1]
+coefs <- data_frame(word=colnames(trainingMatrixScale)[trainingCoefInds -1], Coef=trainingCoefs[trainingCoefInds])
+coefs %>% arrange(Coef)
+
+
+#########################################################
+#attempting predict again
+predictVars <- list(coefs$word) #grab the list of good variables from the above function
+
+
+##--> Didn't work!
+# #Resize training set
+# trainingSkinnySubset <- filter(trainingSkinnyFeatures, trainingSkinnyFeatures$word%in%predictVars[[1]])
+# 
+# #Converting to matrix form 
+# trainingMatrixSubset <- trainingSkinnySubset %>% cast_sparse(subject_id, word, tf_idf)
+# 
+# trainingOrdSubset <- match(rownames(trainingMatrixSubset), trainingDF$subject_id)
+# trainingOutcomeSubset <- ifelse(trainingDF$case[trainingOrdSubset] == 1, 1, 0) 
+# 
+# #Build sparse logistic model - lasso model
+# trainingMatrixScaleSubset <- scale(trainingMatrixSubset)
+# trainingMatrixScaleSubset[is.nan(trainingMatrixScaleSubset)] = 0
+# 
+# 
+# 
+# #Resize test set
+# testSkinnySubset <- filter(testSkinnyFeatures, testSkinnyFeatures$word%in%predictVars[[1]])
+# 
+# testMatrixSubset <- testSkinnySubset %>% cast_sparse(subject_id, word, tf_idf)
+# 
+# testOrdSubset <- match(rownames(testMatrixSubset), testDF$subject_id)
+# testOutcomeSubset <- ifelse(testDF$case[testOrdSubset] == 1, 1, 0) 
+# 
+# #Build sparse logistic model - lasso model
+# testMatrixScaleSubset <- scale(testMatrixSubset)
+# testMatrixScaleSubset[is.nan(testMatrixScaleSubset)] = 0
+# 
+# 
+# 
+# #Rerun glmnet (still using lambda from above)
+# lassoFitSubset <- glmnet(trainingMatrixScaleSubset, trainingOutcomeSubset, family="binomial", alpha=1, lambda=trainingFitCV$lambda.min)
+# 
+# lassoPredictSubset <- predict(lassoFitSubset, testMatrixScaleSubset, lambda=trainingFitCV$lambda.min, type="response")#moment of truth
+# #Fuck.
+# 
+# ##testX <- testMatrixScale[names(testMatrixScale[1,]) %in% predictVars[[1]]]
+# # testX <- testMatrixScale[,which(colnames(testMatrixScale) %in% predictVars[[1]])] #Worked, but is no-longer necessary
+# testPredict <- predict(trainingFit, newx=testX, lambda=trainingFitCV$lambda.min, type="response")
+```
+The original logistic regression yeilded a model with eight select features, of which, all but 'sepsis' are negative.  
+  
+  Below we run 10-fold cross-validation examine which terms were selected by cross-validated model. The misclassification error for each of the regression models are ploted first, then the intercept is displayed, and finally the selected coefficients are also displayed. We set our seed was again set to 23.  
+```{r glmnetCV, echo=FALSE}
+#This is the same as what I did above. Why am I doing it again?
+
+
+# #Cross-validated (CV) model
+# trainingCVFit2 <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class")
+# #CV Plot
+# plot(trainingCVFit2)
+# 
+# #CV Coefficients
+# trainingCVCoefs2 <- coef(trainingCVFit2, s="lambda.min")
+# #Intercept
+# trainingCVCoefs2[1] #-0.038
+# 
+# #Combine to get a single list of coefficients for the selected features
+# trainingCVCoefInds2 <- which(trainingCVCoefs2 != 0)[-1]
+# CVcoefs <- data_frame(word=colnames(trainingMatrixScale)[trainingCVCoefInds2 -1], CVCoef=trainingCVCoefs2[trainingCVCoefInds2])
+# CVcoefs %>% arrange(CVCoef)
+
+```
+  We found the lowest misclassification error (~0.20) to be associated with a model containing four features/coefficients.    
+  
+  According to our calculations, the absence of the terms "status," "examination," and "sinus," and the presence of the term "sepsis" are the greatest indicators of casehood. These terms are the more extreme results from the original glmnet run, which makes sense after replication. Interestingly, we mistakenly ran the cross-validated glmnet with a different seed, and saw far more of the original coeffifients in our selected model, which suggests that perhaps we needed to run a higher k-fold, or, and perhaps more sadly, our calculations are mostly picking up noise. Hoping it was the former, we ran the cross-validated binomial regression with 25 folds (as opposed to ten), and tested seeds 23, 10, and 100.
+  
+```{r cvglmnetTests}
+#testing different seeds and number of folds
+seeds <- seq(1,5,1)
+fold <- seq(5,25,5)
+# fold <- seq(4,8,1) #temp to check coding
+lassoDF1 <- tibble(seed=rep(NA,5),
+                  folds=rep(NA,5),
+                  lambda=rep(NA,5),
+                  meanCVErr=rep(NA,5),
+                  numNZero=rep(NA,5),
+                  intercept=rep(NA,5),
+                  nPredictors=rep(NA,5),
+                  devRatio=rep(NA,5),
+                  nullDev=rep(NA,5),
+                  deviance=rep(NA,5))
+lassoDF2 <- tibble(seed=rep(NA,5),
+                  folds=rep(NA,5),
+                  lambda=rep(NA,5),
+                  meanCVErr=rep(NA,5),
+                  numNZero=rep(NA,5),
+                  intercept=rep(NA,5),
+                  nPredictors=rep(NA,5),
+                  devRatio=rep(NA,5),
+                  nullDev=rep(NA,5),
+                  deviance=rep(NA,5))
+lassoDF3 <- tibble(seed=rep(NA,5),
+                  folds=rep(NA,5),
+                  lambda=rep(NA,5),
+                  meanCVErr=rep(NA,5),
+                  numNZero=rep(NA,5),
+                  intercept=rep(NA,5),
+                  nPredictors=rep(NA,5),
+                  devRatio=rep(NA,5),
+                  nullDev=rep(NA,5),
+                  deviance=rep(NA,5))
+lassoDF4 <- tibble(seed=rep(NA,5),
+                  folds=rep(NA,5),
+                  lambda=rep(NA,5),
+                  meanCVErr=rep(NA,5),
+                  numNZero=rep(NA,5),
+                  intercept=rep(NA,5),
+                  nPredictors=rep(NA,5),
+                  devRatio=rep(NA,5),
+                  nullDev=rep(NA,5),
+                  deviance=rep(NA,5))
+lassoDF5 <- tibble(seed=rep(NA,5),
+                  folds=rep(NA,5),
+                  lambda=rep(NA,5),
+                  meanCVErr=rep(NA,5),
+                  numNZero=rep(NA,5),
+                  intercept=rep(NA,5),
+                  nPredictors=rep(NA,5),
+                  devRatio=rep(NA,5),
+                  nullDev=rep(NA,5),
+                  deviance=rep(NA,5))
+
+
+for(s in 1:5){
+  seed <- seeds[s]
+  set.seed(seed)
+  
+    folds<-5
+    #Lasso
+    lassoCV <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, nfolds=folds)
+    lassoFit <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", alpha=1, lambda=lassoCV$lambda.min)
+    #Store in DF
+    lassoDF1[s, 'seed'] <- seed
+    lassoDF1[s, 'folds'] <- folds
+    lassoDF1[s, 'lambda'] <- lassoCV$lambda.min
+    lassoDF1[s, 'meanCVErr'] <- min(lassoCV$cvm)
+    lassoDF1[s, 'numNZero'] <- lassoCV$nzero[[which.min(lassoCV$cvm)]]
+    lassoDF1[s, 'intercept'] <- lassoFit$a0
+    lassoDF1[s, 'nPredictors'] <- lassoFit$df
+    lassoDF1[s, 'devRatio'] <- lassoFit$dev.ratio
+    lassoDF1[s, 'nullDev'] <- lassoFit$nulldev
+    lassoDF1[s, 'deviance'] <- deviance.glmnet(lassoFit)
+
+    
+    folds<-10
+    #Lasso
+    lassoCV <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, nfolds=folds)
+    lassoFit <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", alpha=1, lambda=lassoCV$lambda.min)
+    #Store in DF
+    lassoDF2[s, 'seed'] <- seed
+    lassoDF2[s, 'folds'] <- folds
+    lassoDF2[s, 'lambda'] <- lassoCV$lambda.min
+    lassoDF2[s, 'meanCVErr'] <- min(lassoCV$cvm)
+    lassoDF2[s, 'numNZero'] <- lassoCV$nzero[[which.min(lassoCV$cvm)]]
+    lassoDF2[s, 'intercept'] <- lassoFit$a0
+    lassoDF2[s, 'nPredictors'] <- lassoFit$df
+    lassoDF2[s, 'devRatio'] <- lassoFit$dev.ratio
+    lassoDF2[s, 'nullDev'] <- lassoFit$nulldev
+    lassoDF2[s, 'deviance'] <- deviance.glmnet(lassoFit)
+    
+    
+    folds<-15
+    #Lasso
+    lassoCV <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, nfolds=folds)
+    lassoFit <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", alpha=1, lambda=lassoCV$lambda.min)
+    #Store in DF
+    lassoDF3[s, 'seed'] <- seed
+    lassoDF3[s, 'folds'] <- folds
+    lassoDF3[s, 'lambda'] <- lassoCV$lambda.min
+    lassoDF3[s, 'meanCVErr'] <- min(lassoCV$cvm)
+    lassoDF3[s, 'numNZero'] <- lassoCV$nzero[[which.min(lassoCV$cvm)]]
+    lassoDF3[s, 'intercept'] <- lassoFit$a0
+    lassoDF3[s, 'nPredictors'] <- lassoFit$df
+    lassoDF3[s, 'devRatio'] <- lassoFit$dev.ratio
+    lassoDF3[s, 'nullDev'] <- lassoFit$nulldev
+    lassoDF3[s, 'deviance'] <- deviance.glmnet(lassoFit)
+    
+    
+    folds<-20
+    #Lasso
+    lassoCV <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, nfolds=folds)
+    lassoFit <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", alpha=1, lambda=lassoCV$lambda.min)
+    #Store in DF
+    lassoDF4[s, 'seed'] <- seed
+    lassoDF4[s, 'folds'] <- folds
+    lassoDF4[s, 'lambda'] <- lassoCV$lambda.min
+    lassoDF4[s, 'meanCVErr'] <- min(lassoCV$cvm)
+    lassoDF4[s, 'numNZero'] <- lassoCV$nzero[[which.min(lassoCV$cvm)]]
+    lassoDF4[s, 'intercept'] <- lassoFit$a0
+    lassoDF4[s, 'nPredictors'] <- lassoFit$df
+    lassoDF4[s, 'devRatio'] <- lassoFit$dev.ratio
+    lassoDF4[s, 'nullDev'] <- lassoFit$nulldev
+    lassoDF4[s, 'deviance'] <- deviance.glmnet(lassoFit)
+    
+    
+    folds<-25
+    #Lasso
+    lassoCV <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, nfolds=folds)
+    lassoFit <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", alpha=1, lambda=lassoCV$lambda.min)
+    #Store in DF
+    lassoDF5[s, 'seed'] <- seed
+    lassoDF5[s, 'folds'] <- folds
+    lassoDF5[s, 'lambda'] <- lassoCV$lambda.min
+    lassoDF5[s, 'meanCVErr'] <- min(lassoCV$cvm)
+    lassoDF5[s, 'numNZero'] <- lassoCV$nzero[[which.min(lassoCV$cvm)]]
+    lassoDF5[s, 'intercept'] <- lassoFit$a0
+    lassoDF5[s, 'nPredictors'] <- lassoFit$df
+    lassoDF5[s, 'devRatio'] <- lassoFit$dev.ratio
+    lassoDF5[s, 'nullDev'] <- lassoFit$nulldev
+    lassoDF5[s, 'deviance'] <- deviance.glmnet(lassoFit)
+    
+    
+    lassoDF <- rbind(lassoDF1, lassoDF2, lassoDF3, lassoDF4, lassoDF5)
+}
+
+
+
+
+
+      
+
+
+# set.seed(23)
+# #Cross-validated (CV) model
+# trainingCVFit2523 <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", nfolds=25, type.measure="class", alpha=1)
+# #Fit
+# trainingFit2523 <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, lambda=trainingFitCV2523$lambda.min)
+# #CV Coefficients
+# trainingCVCoefs2523 <- coef(trainingFit2523, s="lambda.min")
+# #Combine to get a single list of coefficients for the selected features
+# trainingCVCoefInds2523 <- which(trainingCVCoefs2523 != 0)[-1]
+# CVcoefs2523 <- data_frame(word=colnames(trainingMatrixScale)[trainingCVCoefInds2523 -1], CVCoef2523=trainingCVCoefs2523[trainingCVCoefInds2523])
+# CVcoefs2523 %>% arrange(CVCoef2523)
+# 
+# 
+# set.seed(10)
+# #Cross-validated (CV) model
+# trainingCVFit2510 <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", nfolds=25, type.measure="class")
+# #Fit
+# trainingFit2510 <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, lambda=trainingFitCV2510$lambda.min)
+# #CV Coefficients
+# trainingCVCoefs2510 <- coef(trainingFit2510, s="lambda.min")
+# #Combine to get a single list of coefficients for the selected features
+# trainingCVCoefInds2510 <- which(trainingCVCoefs2510 != 0)[-1]
+# CVcoefs2510 <- data_frame(word=colnames(trainingMatrixScale)[trainingCVCoefInds2510 -1], CVCoef2510=trainingCVCoefs2510[trainingCVCoefInds2510])
+# CVcoefs2510 %>% arrange(CVCoef2510)
+# 
+# 
+# set.seed(100)
+# #Cross-validated (CV) model
+# trainingCVFit25100 <- cv.glmnet(trainingMatrixScale, trainingOutcome, family="binomial", nfolds=25, type.measure="class")
+# #Fit
+# trainingFit25100 <- glmnet(trainingMatrixScale, trainingOutcome, family="binomial", type.measure="class", alpha=1, lambda=trainingFitCV25100$lambda.min)
+# #CV Coefficients
+# trainingCVCoefs25100 <- coef(trainingFit25100, s="lambda.min")
+# #Combine to get a single list of coefficients for the selected features
+# trainingCVCoefInds25100 <- which(trainingCVCoefs25100 != 0)[-1]
+# CVcoefs25100 <- data_frame(word=colnames(trainingMatrixScale)[trainingCVCoefInds25100 -1], CVCoef25100=trainingCVCoefs25100[trainingCVCoefInds25100])
+# CVcoefs25100 %>% arrange(CVCoef25100)
+
+```
+  
+  After testing a greater number of replications, we are still seeing somewhat similar coefficients and values, as well as some seeds picking up more coefficients than others. However, we note that those models which detect a greater number of coefficients, always contain the terms included in the models which detect a smaller number of coefficients. Therefore, we believe that the detection of the words 'status,' 'sepsis,' 'examination,' and 'sinus,' is a valid result.  
+  
+  
+##Discussion
+Given the similarity between cases and controls, in future work, it may be essential to classify information in three ways: 1) terms which are significantly associated with cases, 2) terms which are essential for case investigation, regardless of association, and 3) terms which are not relevant to case investigation. Along similar lines, it may also be helpful to create a set of stop words which are relevant in medicine, such as measurement units.  
+   However, since our lasso logistic regression did yeild a non-zero feature set, we do believe it would be possible to continue our work towards improving eCI.  
+
+##Limitations
+The MIMIC-III dataset contains deidentified data from only critical care patients. We were therefore limited in the diseases we could select from, as well as the data available to analyze. Also, given the limited time, we were not able to spell-check our data. Spell-checking data has mixed implications, as we are potentially gathering incorrect term frequencies; however, data containing misspellings more accurately represents a true electronic health record. Additionally, we were not able to use a high powered computing source.   
+  
+##Next Steps
+For our next step, we would like to extract the full sentences which contain the features most associated with cases, in order to give better context to the investigator. We will also work to create a training set comprised of epidemiologically-relevant phrases in order to identify other elements in case investigation, such as symptom duration and exposure history. 
+
+
+
+##References
+1. Lee LM, Teutsch SM, Thacker SB, St. Louis ME, eds. Principles & Practice of Public Health Surveillance. 3rd ed. New York, New York, USA: Oxford University Press; 2010.
+2. 	MacKenzie WR, Davidson AJ, Wiesenthal A, et al. The promise of electronic case reporting. Public Health Rep. 2016;131(6):742-746. doi:10.1177/0033354916670871
+3. 	About | Digital Bridge. http://www.digitalbridge.us/about/. Accessed January 31, 2018.
+4. 	Advancing Electronic Case Reporting of Sexually Transmitted Infections.; 2016. https://www.phii.org/sites/www.phii.org/files/resource/files/ECRofSTIGuidance_v2_Draft1_20160719.pdf. Accessed January 31, 2018.
+5. Johnson AE, Pollard TJ, Shen L, et al. MIMIC-III, a freely accessible critical care database Background &amp; Summary. Nature. 2016. doi:10.1038/sdata.2016.35
+6. Goldberger AL, Amaral LAN, Glass L, et al. PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals. Circulation. 2000;101(23):e215-e220. http://circ.ahajournals.org/content/101/23/e215.full.
+7. Salmonellosis (Non-typhoidal); 2016. http://www.mass.gov/eohhs/docs/dph/disease-reporting/guide/salmonellosis.pdf
+8. Never directly referenced, but major shout to https://web.stanford.edu/~hastie/glmnet/glmnet_beta.html for an excellent glmnet walk-through
+
+All coding available on [github](https://github.com/mldorr/MIMIC)
+
+_That's all folks_
+![](C:\Users\Maggie\OneDrive\Pictures\Ketchup\Sunglasses.jpg)
+
+##########################################################
+###Feedback from Noah:
+Writeup- Nice job on the writeup! The intro/background is great. In general it's also very cleanly written and explained.
+
+The logistic regression results are quite interesting: "sepsis" seems like a pretty common word that could indicate a lot of things. Is it being found here because most control visits/notes correspond to healthy patients? (Perhaps a different selection of the controls-- as you noted-- might change things?). I also wonder if, given more data, a model with interactions would be useful? (ie. Patients with "sepsis" who also have "ate raw eggs" are highly likely to have salmonella).
+
+Seems like a great start! (And I know, primarily, you were trying to build some familiarity with these technologies for more complex versions of this to come).
+
+Presentation- Great job on the presentation. I really appreciated the background on case-reporting!
